@@ -1,6 +1,8 @@
-Personal Notes: 
-- This is a also good opportunity to understand how autocomplete works with flags and different terminals
+Note: This repo will be empty until I get the snail-to-cheetah basic implmentation of this project done. (serail fullread) It is this tool, it's just cut down -- no flags because I want to focus on the implementation method - serial, v. parallel, full-read v. streaming, etc. 
 
+Personal Notes:
+- This is a also good opportunity to understand how autocomplete works with flags and different terminals
+   - See the autocomplete repo (currently private) 
 - This will be written in Go
 
 ## Description
