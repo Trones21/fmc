@@ -170,3 +170,66 @@ func (fmc *FrontMatterChecker) fixFiles(files []string, template map[string]inte
 
 	return nil
 }
+
+// processFile processes a file, checking its front matter against the loaded JSON template.
+func processFile(path string) error {
+	// Read the file content
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Extract front matter
+
+	frontMatter, err := extractFrontMatterBoundary(string(content))
+	if err != nil {
+		return fmt.Errorf("failed to extract front matter. Error: %w", err)
+	}
+
+	// Parse the front matter into a map
+	var frontMatterKVs map[string]interface{}
+	err = yaml.Unmarshal([]byte(frontMatter), &frontMatterKVs)
+	if err != nil {
+		log.Fatalf("failed to parse YAML front matter: %v", err)
+	}
+
+	// Check for missing keys
+	missingKeys := []string{}
+	for key := range templateKeys {
+		if _, exists := frontMatterKVs[key]; !exists {
+			missingKeys = append(missingKeys, key)
+		}
+	}
+
+	if len(missingKeys) > 0 {
+		// Currently they are all invalid as the template is pretty static
+		fmt.Printf("File: %s - Missing keys in front matter: %v\n", path, missingKeys)
+	} else {
+		//fmt.Printf("File: %s - Front matter is valid.\n", path)
+	}
+
+	return nil
+}
+
+// extractFrontMatterBoundary extracts the front matter by reading up to the second ---.
+func extractFrontMatterBoundary(content string) (string, error) {
+	// Normalize line endings to \n to handle different platforms
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	lines := strings.Split(content, "\n")
+
+	if len(lines) < 2 || lines[0] != "---" {
+		return "", fmt.Errorf("front matter start delimiter not found. First line: %s", lines[0])
+	}
+
+	var frontMatterLines []string
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			return strings.Join(frontMatterLines, "\n"), nil
+		}
+		frontMatterLines = append(frontMatterLines, lines[i])
+	}
+
+	return "", errors.New("front matter end delimiter not found")
+}
+

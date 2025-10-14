@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Go: front matter checker",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/fmc",
+      "args": ["-path", "${workspaceFolder}/filegen_out/file_1.md"],
+      "env": {},
+      "cwd": "${workspaceFolder}/serial-full-read"
+    }
+  ]
+}
