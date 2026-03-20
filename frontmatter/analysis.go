@@ -24,6 +24,27 @@ func AnalyzeFile(path string, template map[string]interface{}) (FileAnalysis, er
 	return FileAnalysis{}, ErrNotImplemented
 }
 
+func FindMissingProps(content string, template map[string]any) ([]string, error) {
+	fmRaw, err := ExtractFrontMatterBoundary(content)
+	if err != nil {
+		return nil, err
+	}
+
+	var current map[string]any
+	if err := yaml.Unmarshal([]byte(fmRaw), &current); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	var missing []string
+	for key := range template {
+		if _, exists := current[key]; !exists {
+			missing = append(missing, key)
+		}
+	}
+	sort.Strings(missing)
+	return missing, nil
+}
+
 func FindExtraProps(content string, template map[string]any) ([]string, error) {
 	fmRaw, err := ExtractFrontMatterBoundary(content)
 	if err != nil {

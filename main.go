@@ -12,6 +12,15 @@ import (
 	"github.com/Trones21/fmc/frontmatter"
 )
 
+// repeatableFlag allows a flag to be specified multiple times, collecting all values.
+type repeatableFlag []string
+
+func (f *repeatableFlag) String() string { return strings.Join(*f, ", ") }
+func (f *repeatableFlag) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
 type Config struct {
 	ValueInsertion map[string]any `json:"valueInsertion"`
 }
@@ -28,13 +37,16 @@ type FrontMatterChecker struct {
 	GenID              bool
 	Config             Config
 
-	IssuesOnly     bool
-	Verbose        bool
-	ListExtraProps bool
+	IssuesOnly       bool
+	Verbose          bool
+	ListExtraProps   bool
+	ListMissingProps bool
+	ReplaceKeys      repeatableFlag // each entry: "OldKey:NewKey"
+	CreateSlugs      repeatableFlag // each entry: "FromKey:ToKey[:action]"
 }
 
 func main() {
-	// Subcommands are checked before flag parsing
+	// policy subcommand intercepted before flag parsing
 	if len(os.Args) > 1 && os.Args[1] == "policy" {
 		runPolicyCommand(os.Args[2:])
 		return
@@ -44,30 +56,59 @@ func main() {
 		FixOptions: make(map[string]bool),
 	}
 
-	// Parse flags
+	// Register flags
+	////// Front Matter Template /////
 	flag.StringVar(&checker.TemplateFile, "template", "", "Path to the front matter template file")
 	flag.StringVar(&checker.TemplateFile, "t", "", "Alias for -template")
-	flag.StringVar(&checker.Dir, "dir", "", "Directory containing markdown files")
+
+	////// Policy/Config - May delete later /////
 	flag.StringVar(&checker.ConfigFile, "config", "", "Path to the configuration JSON file")
 	flag.StringVar(&checker.PolicyFile, "policy", "", "Path to the property policy JSON file")
 	flag.StringVar(&checker.PolicyFile, "p", "", "Alias for -policy")
+
+	////// Dir/files to operate on /////
+	flag.StringVar(&checker.Dir, "dir", "", "Directory containing markdown files")
 	files := flag.String("files", "", "Comma-separated list of files to analyze/fix")
+
+	////// List/analyze - Do not rewrite front matter /////
 	issuesOnly := flag.Bool("issues-only", false, "Show only files with issues")
 	verbose := flag.Bool("verbose", false, "Show more detailed analysis output")
 	placementAudit := flag.Bool("placementAudit", false, "Audit front matter placement only")
 	analyzeOnly := flag.Bool("analyze", false, "Analyze the files without making changes")
+	listExtraProps := flag.Bool("listExtraProps", false, "List properties not defined in the template")
+	listMissingProps := flag.Bool("listMissingProps", false, "List template properties missing from each file")
+
+	///// Make Changes to Front Matter ///////
+	//Single Property CRUD
+	genID := flag.Bool("genID", false, "Generate IDs for files where the ID property is missing or empty")
+	flag.Var(&checker.ReplaceKeys, "replaceKey", "Rename a key, keeping its value: -replaceKey OldKey:NewKey (repeatable)")
+	flag.Var(&checker.CreateSlugs, "createSlug", "Create a URL slug from a key: -createSlug FromKey:ToKey[:action] where action is always|if_empty (default: add_if_missing) (repeatable)")
+
+	//Multi Property CRUD
 	fixFullConform := flag.Bool("fullConform", false, "Fully conform the front matter to the template")
 	fixAllProps := flag.Bool("allProps", false, "Ensure all properties in the template exist in the front matter")
-	fixOrder := flag.Bool("fixOrder", false, "Reorder properties to match the template")
-	listExtraProps := flag.Bool("listExtraProps", false, "List properties not defined in the template")
 	removeExtraProps := flag.Bool("removeExtraProps", false, "Remove properties not defined in the template")
-	genID := flag.Bool("genID", false, "Generate IDs for files where the ID property is missing or empty")
+
+	//Other
+	fixOrder := flag.Bool("fixOrder", false, "Reorder properties to match the template")
+
+	///// Help/Examples /////
 	help := flag.Bool("help", false, "Display help information")
+
+	// help subcommand intercepted after flag registration so PrintDefaults works
+	if len(os.Args) > 1 && os.Args[1] == "help" {
+		if len(os.Args) > 2 {
+			runHelpTopic(os.Args[2])
+		} else {
+			printHelp()
+		}
+		return
+	}
+
 	flag.Parse()
 
 	if *help {
-		fmt.Println("Usage: [flags]")
-		flag.PrintDefaults()
+		printHelp()
 		return
 	}
 
@@ -86,6 +127,7 @@ func main() {
 	checker.FixOptions["removeExtraProps"] = *removeExtraProps
 	checker.GenID = *genID
 	checker.ListExtraProps = *listExtraProps
+	checker.ListMissingProps = *listMissingProps
 
 	if *files != "" {
 		checker.Files = strings.Split(*files, ",")
@@ -113,6 +155,14 @@ func (fmc *FrontMatterChecker) Run() error {
 		return fmc.auditPlacement(filesToProcess)
 	}
 
+	if len(fmc.ReplaceKeys) > 0 {
+		return fmc.replaceKeys(filesToProcess)
+	}
+
+	if len(fmc.CreateSlugs) > 0 {
+		return fmc.createSlugs(filesToProcess)
+	}
+
 	template, err := fmc.loadTemplate()
 	if err != nil {
 		return err
@@ -128,6 +178,10 @@ func (fmc *FrontMatterChecker) Run() error {
 
 	if fmc.ListExtraProps {
 		return fmc.listExtraProps(filesToProcess, template)
+	}
+
+	if fmc.ListMissingProps {
+		return fmc.listMissingProps(filesToProcess, template)
 	}
 
 	if fmc.AnalyzeOnly {
@@ -367,54 +421,115 @@ func (fmc *FrontMatterChecker) listExtraProps(files []string, template map[strin
 	return nil
 }
 
-func runPolicyCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Println("Usage: fmc policy <command>")
-		fmt.Println("Commands:")
-		fmt.Println("  help             Show policy file format and actions")
-		fmt.Println("  list-functions   List all available computed and transform functions")
-		return
+func (fmc *FrontMatterChecker) listMissingProps(files []string, template map[string]any) error {
+	fmt.Println("| File | Missing Props |")
+	fmt.Println("|---|---|")
+
+	counts := map[string]int{}
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("| %s | error: %v |\n", file, err)
+			continue
+		}
+		missing, err := frontmatter.FindMissingProps(string(content), template)
+		if err != nil {
+			fmt.Printf("| %s | error: %v |\n", file, err)
+			continue
+		}
+		fmt.Printf("| %s | %s |\n", file, joinOrDash(missing))
+		for _, k := range missing {
+			counts[k]++
+		}
 	}
 
-	switch args[0] {
-	case "help":
-		fmt.Print(`Policy file format (JSON):
-
-  {
-    "<key>": { "action": "<action>", "source": "<source>", "fn": "<fn>", "from": "<key>", "params": {} }
-  }
-
-Actions:
-  add_if_missing      Add the key if absent
-  overwrite_always    Always set the value
-  overwrite_if_empty  Set only if missing or empty
-  preserve            Leave untouched (default)
-  rename_from         Rename an old key to this one; requires "from"
-
-Sources:
-  static              Use the literal "value" field
-  computed            Run a built-in function (see list-functions)
-  transform           Derive a value from another property; requires "from"
-
-`)
-	case "list-functions":
-		fmt.Println("Computed functions  (\"source\": \"computed\")")
-		fmt.Println()
-		fmt.Println("  today            Current date as YYYY-MM-DD")
-		fmt.Println("  uuid             Random UUID v4")
-		fmt.Println("  path_segments    Segments from the file path added to the tags property")
-		fmt.Println("                   Drops the first and last segment (root prefix and filename)")
-		fmt.Println("                   Params:")
-		fmt.Println("                     skip  (int)  Drop an additional N leading segments (default 0)")
-		fmt.Println()
-		fmt.Println("Transform functions  (\"source\": \"transform\")  — require \"from\": \"<key>\"")
-		fmt.Println()
-		fmt.Println("  slug             URL-safe slug (lowercase, spaces→dashes, special chars stripped)")
-	default:
-		fmt.Printf("unknown policy command %q\n", args[0])
-		fmt.Println("Run 'fmc policy' to see available commands.")
-		os.Exit(1)
+	if len(counts) == 0 {
+		fmt.Println("\nNo missing properties found.")
+		return nil
 	}
+
+	type kv struct {
+		Key   string
+		Count int
+	}
+	ranked := make([]kv, 0, len(counts))
+	for k, v := range counts {
+		ranked = append(ranked, kv{k, v})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Count != ranked[j].Count {
+			return ranked[i].Count > ranked[j].Count
+		}
+		return ranked[i].Key < ranked[j].Key
+	})
+
+	fmt.Println("\nSummary:")
+	fmt.Println("| Property | Count |")
+	fmt.Println("|---|---|")
+	for _, entry := range ranked {
+		fmt.Printf("| %s | %d |\n", entry.Key, entry.Count)
+	}
+
+	return nil
+}
+
+func (fmc *FrontMatterChecker) replaceKeys(files []string) error {
+	// Build a minimal template and rename policies from -replaceKey OldKey:NewKey entries
+	template := map[string]any{}
+	policies := make([]frontmatter.PropertyPolicy, 0, len(fmc.ReplaceKeys))
+
+	for _, entry := range fmc.ReplaceKeys {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid -replaceKey value %q: expected OldKey:NewKey", entry)
+		}
+		oldKey, newKey := parts[0], parts[1]
+		template[newKey] = ""
+		policies = append(policies, frontmatter.PropertyPolicy{
+			Key:     newKey,
+			Action:  frontmatter.ActionRenameFrom,
+			FromKey: oldKey,
+		})
+	}
+
+	return fmc.fixFiles(files, template, policies)
+}
+
+func (fmc *FrontMatterChecker) createSlugs(files []string) error {
+	template := map[string]any{}
+	policies := make([]frontmatter.PropertyPolicy, 0, len(fmc.CreateSlugs))
+
+	for _, entry := range fmc.CreateSlugs {
+		parts := strings.SplitN(entry, ":", 3)
+		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid -createSlug value %q: expected FromKey:ToKey[:action]", entry)
+		}
+		fromKey, toKey := parts[0], parts[1]
+
+		action := frontmatter.ActionAddIfMissing
+		if len(parts) == 3 {
+			switch parts[2] {
+			case "always":
+				action = frontmatter.ActionOverwriteAlways
+			case "if_empty":
+				action = frontmatter.ActionOverwriteIfEmpty
+			default:
+				return fmt.Errorf("invalid action %q in -createSlug %q: expected always|if_empty", parts[2], entry)
+			}
+		}
+
+		template[toKey] = ""
+		policies = append(policies, frontmatter.PropertyPolicy{
+			Key:     toKey,
+			Action:  action,
+			Source:  frontmatter.SourceTransform,
+			Fn:      "slug",
+			FromKey: fromKey,
+		})
+	}
+
+	return fmc.fixFiles(files, template, policies)
 }
 
 func joinOrDash(items []string) string {
