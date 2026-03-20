@@ -1,0 +1,1 @@
+Front matter template to use for trones-noters is stored at root of docusaurus prod

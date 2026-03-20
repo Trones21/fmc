@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/Trones21/fmc/frontmatter"
 )
 
 // TestExtractFrontMatterBoundary tests the extractFrontMatterBoundary function.
@@ -45,7 +47,7 @@ date: 2024-12-21
 	}
 
 	for _, test := range tests {
-		result, err := extractFrontMatterBoundary(test.content)
+		result, err := frontmatter.ExtractFrontMatterBoundary(test.content)
 		if test.expectErr {
 			if err == nil {
 				t.Errorf("expected error but got none for content: %s", test.content)

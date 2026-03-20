@@ -10,6 +10,12 @@ This tool will check the front matter for markdown files to ensure they align to
 
 **IMPORTANT: It is ASSUMED that the files are part of a version control repository (z.b. git). This tool DOES NOT backup files before making changes to them. There is however a log of chnges made, which can be found in <TBD>. This tool does not automatically add or commit changes to the repo, that remains the task of the end user**
 
+## Build 
+
+`go build`
+
+
+
 ## Required Flags:
 
 ### Template

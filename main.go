@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Trones21/fmc/frontmatter"
 )
 
 type Config struct {
@@ -14,14 +16,18 @@ type Config struct {
 }
 
 type FrontMatterChecker struct {
-	TemplateFile string
-	Dir          string
-	Files        []string
-	ConfigFile   string
-	FixOptions   map[string]bool
-	AnalyzeOnly  bool
-	GenID        bool
-	Config       Config
+	TemplateFile       string
+	Dir                string
+	Files              []string
+	ConfigFile         string
+	FixOptions         map[string]bool
+	AnalyzeOnly        bool
+	PlacementAuditOnly bool
+	GenID              bool
+	Config             Config
+
+	IssuesOnly bool
+	Verbose    bool
 }
 
 func main() {
@@ -31,9 +37,13 @@ func main() {
 
 	// Parse flags
 	flag.StringVar(&checker.TemplateFile, "template", "", "Path to the front matter template file")
+	flag.StringVar(&checker.TemplateFile, "t", "", "Alias for -template")
 	flag.StringVar(&checker.Dir, "dir", "", "Directory containing markdown files")
 	flag.StringVar(&checker.ConfigFile, "config", "", "Path to the configuration JSON file")
 	files := flag.String("files", "", "Comma-separated list of files to analyze/fix")
+	issuesOnly := flag.Bool("issues-only", false, "Show only files with issues")
+	verbose := flag.Bool("verbose", false, "Show more detailed analysis output")
+	placementAudit := flag.Bool("placementAudit", false, "Audit front matter placement only")
 	analyzeOnly := flag.Bool("analyze", false, "Analyze the files without making changes")
 	fixFullConform := flag.Bool("fullConform", false, "Fully conform the front matter to the template")
 	fixAllProps := flag.Bool("allProps", false, "Ensure all properties in the template exist in the front matter")
@@ -49,7 +59,15 @@ func main() {
 		return
 	}
 
+	// Audit/Analysis Modes
+	checker.PlacementAuditOnly = *placementAudit
 	checker.AnalyzeOnly = *analyzeOnly
+
+	// Analysis output
+	checker.IssuesOnly = *issuesOnly
+	checker.Verbose = *verbose
+
+	// Modification
 	checker.FixOptions["fullConform"] = *fixFullConform
 	checker.FixOptions["allProps"] = *fixAllProps
 	checker.FixOptions["fixOrder"] = *fixOrder
@@ -67,26 +85,26 @@ func main() {
 }
 
 func (fmc *FrontMatterChecker) Run() error {
-	// Load template
-	template, err := fmc.loadTemplate()
-	if err != nil {
-		return err
-	}
-
-	// Load config if specified
 	if fmc.ConfigFile != "" {
 		if err := fmc.loadConfig(); err != nil {
 			return err
 		}
 	}
 
-	// Get files to process
 	filesToProcess, err := fmc.getFiles()
 	if err != nil {
 		return err
 	}
 
-	// Analyze or fix files
+	if fmc.PlacementAuditOnly {
+		return fmc.auditPlacement(filesToProcess)
+	}
+
+	template, err := fmc.loadTemplate()
+	if err != nil {
+		return err
+	}
+
 	if fmc.AnalyzeOnly {
 		return fmc.analyzeFiles(filesToProcess, template)
 	}
@@ -153,11 +171,58 @@ func (fmc *FrontMatterChecker) getFiles() ([]string, error) {
 }
 
 func (fmc *FrontMatterChecker) analyzeFiles(files []string, template map[string]interface{}) error {
-	fmt.Println("| FullPath | Template Properties | Extra Properties |")
-	fmt.Println("|---|---|---|")
+	fmt.Println("| FullPath | Placement | Missing Props | Extra Props | Reason |")
+	fmt.Println("|---|---|---|---|---|")
 
 	for _, file := range files {
-		fmt.Printf("| %s | analysis to be implemented |\n", file)
+		analysis, err := frontmatter.AnalyzeFile(file, template)
+		if err != nil {
+			fmt.Printf("| %s | error |  |  | %s |\n", file, err)
+			continue
+		}
+
+		if fmc.IssuesOnly && !analysis.HasIssues() {
+			continue
+		}
+
+		fmt.Printf(
+			"| %s | %s | %s | %s | %s |\n",
+			analysis.Path,
+			analysis.Placement.Status,
+			joinOrDash(analysis.MissingProps),
+			joinOrDash(analysis.ExtraProps),
+			valueOrDash(analysis.Placement.Reason),
+		)
+
+		if fmc.Verbose {
+			// print more detail lines later
+		}
+	}
+
+	return nil
+}
+
+func (fmc *FrontMatterChecker) auditPlacement(files []string) error {
+	fmt.Println("| FullPath | Placement | Reason | Candidate Start Line |")
+	fmt.Println("|---|---|---|---|")
+
+	results, err := frontmatter.AuditPlacementFiles(files)
+	if err != nil {
+		return err
+	}
+
+	for _, result := range results {
+		startLine := ""
+		if result.Candidate != nil {
+			startLine = fmt.Sprintf("%d", result.Candidate.StartLine)
+		}
+
+		fmt.Printf("| %s | %s | %s | %s |\n",
+			result.FilePath,
+			result.Status,
+			result.Reason,
+			startLine,
+		)
 	}
 
 	return nil
@@ -171,65 +236,16 @@ func (fmc *FrontMatterChecker) fixFiles(files []string, template map[string]inte
 	return nil
 }
 
-// processFile processes a file, checking its front matter against the loaded JSON template.
-func processFile(path string) error {
-	// Read the file content
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
+func joinOrDash(items []string) string {
+	if len(items) == 0 {
+		return "-"
 	}
-
-	// Extract front matter
-
-	frontMatter, err := extractFrontMatterBoundary(string(content))
-	if err != nil {
-		return fmt.Errorf("failed to extract front matter. Error: %w", err)
-	}
-
-	// Parse the front matter into a map
-	var frontMatterKVs map[string]interface{}
-	err = yaml.Unmarshal([]byte(frontMatter), &frontMatterKVs)
-	if err != nil {
-		log.Fatalf("failed to parse YAML front matter: %v", err)
-	}
-
-	// Check for missing keys
-	missingKeys := []string{}
-	for key := range templateKeys {
-		if _, exists := frontMatterKVs[key]; !exists {
-			missingKeys = append(missingKeys, key)
-		}
-	}
-
-	if len(missingKeys) > 0 {
-		// Currently they are all invalid as the template is pretty static
-		fmt.Printf("File: %s - Missing keys in front matter: %v\n", path, missingKeys)
-	} else {
-		//fmt.Printf("File: %s - Front matter is valid.\n", path)
-	}
-
-	return nil
+	return strings.Join(items, ", ")
 }
 
-// extractFrontMatterBoundary extracts the front matter by reading up to the second ---.
-func extractFrontMatterBoundary(content string) (string, error) {
-	// Normalize line endings to \n to handle different platforms
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
-	lines := strings.Split(content, "\n")
-
-	if len(lines) < 2 || lines[0] != "---" {
-		return "", fmt.Errorf("front matter start delimiter not found. First line: %s", lines[0])
+func valueOrDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
 	}
-
-	var frontMatterLines []string
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			return strings.Join(frontMatterLines, "\n"), nil
-		}
-		frontMatterLines = append(frontMatterLines, lines[i])
-	}
-
-	return "", errors.New("front matter end delimiter not found")
+	return s
 }
-
