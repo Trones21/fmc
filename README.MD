@@ -1,118 +1,164 @@
-Note: This repo will be empty until I get the snail-to-cheetah basic implmentation of this project done. (serail fullread) It is this tool, it's just cut down -- no flags because I want to focus on the implementation method - serial, v. parallel, full-read v. streaming, etc. 
+# fmc — Front Matter Checker
 
-Personal Notes:
-- This is a also good opportunity to understand how autocomplete works with flags and different terminals
-   - See the autocomplete repo (currently private) 
-- This will be written in Go
+A CLI tool for auditing and fixing YAML front matter in markdown files.
 
-## Description
-This tool will check the front matter for markdown files to ensure they align to a specified format.
+**IMPORTANT: fmc assumes files are under version control. It does not back up files before modifying them. Always review planned changes before confirming.**
 
-**IMPORTANT: It is ASSUMED that the files are part of a version control repository (z.b. git). This tool DOES NOT backup files before making changes to them. There is however a log of chnges made, which can be found in <TBD>. This tool does not automatically add or commit changes to the repo, that remains the task of the end user**
+## Build
 
-## Build 
+```
+go build
+```
 
-`go build`
+## Testing
 
+**Unit tests** (colocated with source in `frontmatter/`):
+```
+go test ./...
+```
 
+**Integration tests** (run the compiled binary against `example-files/`):
+```
+go test -tags integration ./...
+```
 
-## Required Flags:
+Integration tests are opt-in via the `integration` build tag so they don't slow down the default test run. They build the binary fresh each run and exercise the CLI flags end-to-end against the files in `example-files/`.
+
+To run everything together:
+```
+go test -tags integration -v ./...
+```
+
+---
+
+## Concepts
 
 ### Template
-- -t | --template <path to template>
-	- Will return an error if the template does not exist
 
-### Analyze or Fix 
-- analyze 
-	- Will only provide an output. For now this output is of this format:
-	
-	| FullPath | <Prop Name (From Template)> | <Prop Name (From Template)> | <Prop Name(Not in Template)> | 
-	|---|---| --- | -- |
-	| <-filename with full **project** path->  | <-missing \| present(no value) \| hasValue -> | <-missing \| present(no value) \| hasValue ->| <-missing \| present(no value) \| hasValue ->
-	| <-filename with full **project** path->  | <-missing \| present(no value) \| hasValue -> | <-missing \| present(no value) \| hasValue ->| <-missing \| present(no value) \| hasValue ->
-
-**The prop names specified in the template will always appear before the prop names that exist in the files but do NOT exist in the template.**
-
-- fix
-	- Will fix issues. You must also add more flags to specify the type of fix:
-	
-#### Fix Options:
-When using the fix flag we must add additional flags to determine exactly the modifications to be made.
-
-- fullConform
-	- Ensures that the front matter fully conforms to the specification. (Includes all properties and they are in the specified order). 
-		- This option **does** ensure that the front matter starts on the first line of the file
-		- This option **does** remove extra properties (& the values they may hold) 
-		- This option **does** generate IDs if ID is a property specified in the template
-		- This option **does not** check that the properties contain values, only that the properties exist. 
-
-- allProps
-	- This option ensures that all the properties in the template exist, 
-
-- fixOrder
-	- Reorders the properties to match the template specification
-
-- removeExtraProps
-    - This will only remove properties not defined in the template
-
-#### Files to Be Analyzed/Fixed
-It is also required to use the `-dir` flag or the `-files` flag. This tells the script which files/directories we want to fix or analyze.
-
--  dir 
-	- A single directory, relative to the project root. An error will be returned in the directory doesn't exist
-
-- files
-	- One or many files
-		- Note for Dev: this wilkl essentially just skip the dir traversal step and check for these files directly (and add the to the filePathsToProcess array) 
-
-#### Optional Flags
-Value Insertion:
-- - genID
-	- Generate an ID if ID is a property specified in the template and the ID property is either missing or has no value. 
-- vfc | -- keyValuesFromConfig
-	- Uses the key value pairs from the valueInsertion property of the config json
-		- Implementation note. Must be used with the -config flag
-- help 
-	- Display this file
-
-
-## Output
-The program emits the template to the console as well as an explanation of the flags chosen and asks you if you want to proceed [Y/N]
- - This check can be skipped with the `noCheck` setting set to true in the config file. 
-
-## Config File
-
-The config file can be used to 
-
-`-config <absolute filesystem path>`
-
-### Format
+A JSON file that defines the expected front matter schema — which keys should exist. Values in the template are ignored; only the keys matter.
 
 ```json
 {
-	valueInsertion:
-	{
-		prop: "value to insert",
-		anotherProp: "['value', 'value']"
-	}
-	
-	
+  "id": "",
+  "title": "",
+  "last_update": "",
+  "tags": ""
 }
 ```
-Note the order of the properties does not need to match the order of the properties in the template, nor do all the properties in the template need to appear here.
 
+### Policy
 
-## Example Use: 
-`fmc -t <template path> -analyze -dir ./myfolder/ `
-Prints the output table to the console 
+A separate JSON file that defines *how* each key should be handled when fixing files. Properties not listed default to `preserve` (untouched).
 
-`fmc -t <template path> -fix -a -dir / `
-This would fix every file in the project. All files would now exactly match the template, see -a notes for more info.
+```json
+{
+  "id":          { "action": "add_if_missing",     "source": "computed", "fn": "uuid" },
+  "title":       { "action": "add_if_missing",     "source": "static" },
+  "last_update": { "action": "overwrite_if_empty", "source": "computed", "fn": "today" },
+  "slug":        { "action": "add_if_missing",     "source": "transform", "fn": "slug", "from": "title" },
+  "Last_update": { "action": "rename_from",        "from": "Last_update" },
+  "tags":        { "action": "preserve" }
+}
+```
 
-`fmc -t <template path> -vfc -fix -a -dir / -config`
+#### Actions
 
+| Action | Behaviour |
+|---|---|
+| `add_if_missing` | Add the key if it doesn't exist |
+| `overwrite_always` | Always set the value |
+| `overwrite_if_empty` | Set the value only if the key is missing or empty |
+| `preserve` | Leave the key untouched (default) |
+| `rename_from` | Rename an old key to this key, keeping the value; requires `"from"` |
 
- Later Stuff:
- -- Idea: What about chaining... e.g. if this prop exists with this value then create a new prop:value pair... 
+#### Sources
 
+| Source | Description |
+|---|---|
+| `static` | Use the literal `value` field |
+| `computed` | Run a built-in function (see below) |
+| `transform` | Derive a value from another property; requires `"from"` |
 
+#### Computed functions (`"source": "computed"`)
+
+| fn | Output |
+|---|---|
+| `today` | Current date as `YYYY-MM-DD` |
+| `uuid` | Random UUID v4 |
+
+#### Transform functions (`"source": "transform"`)
+
+| fn | Output |
+|---|---|
+| `slug` | URL-safe slug derived from the source key (lowercase, spaces→dashes, special chars stripped) |
+
+---
+
+## Flags
+
+### File selection (required)
+
+| Flag | Description |
+|---|---|
+| `-dir <path>` | Directory to walk for `.md` files |
+| `-files <a,b>` | Comma-separated list of specific files |
+
+### Template & policy
+
+| Flag | Description |
+|---|---|
+| `-t`, `-template <path>` | Path to the template JSON file |
+| `-p`, `-policy <path>` | Path to the policy JSON file |
+
+### Analysis
+
+| Flag | Description |
+|---|---|
+| `-placementAudit` | Report where front matter appears in each file |
+| `-listExtraProps` | Report keys present in files but absent from the template, with a summary count (useful for spotting typos and casing issues) |
+| `-analyze` | Full analysis against the template *(not yet implemented)* |
+| `-issues-only` | Only show files that have issues |
+| `-verbose` | More detailed output |
+
+### Fix options
+
+Fix operations show a preview of all planned changes and prompt `[Y/n]` before writing anything.
+
+| Flag | Description |
+|---|---|
+| `-allProps` | Add any missing template keys (uses policy for values) |
+| `-fullConform` | Fully conform to the template: add missing, remove extras, fix order |
+| `-fixOrder` | Reorder keys to match template order |
+| `-removeExtraProps` | Remove keys not in the template |
+| `-genID` | Generate an ID if the `id` key is missing or empty |
+
+### Other
+
+| Flag | Description |
+|---|---|
+| `-config <path>` | Path to a config JSON file |
+| `-help` | Print flag reference |
+
+---
+
+## Example Usage
+
+**Audit placement of front matter:**
+```
+fmc -dir ./docs --placementAudit
+```
+
+**Find extra/misspelled keys across a directory:**
+```
+fmc -t template.json -dir ./docs --listExtraProps
+```
+
+**Preview and apply fixes using a policy:**
+```
+fmc -t template.json -p policy.json -dir ./docs -allProps
+```
+
+**Fix a single file:**
+```
+fmc -t template.json -p policy.json -files ./docs/my-post.md -allProps
+```

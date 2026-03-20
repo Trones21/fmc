@@ -1,0 +1,6 @@
+{
+  "id":          { "action": "add_if_missing", "source": "computed", "fn": "uuid" },
+  "title":       { "action": "add_if_missing", "source": "static" },
+  "last_update": { "action": "overwrite_if_empty", "source": "computed", "fn": "today" },
+  "tags":        { "action": "preserve" }
+}

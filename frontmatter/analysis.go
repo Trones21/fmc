@@ -3,6 +3,7 @@ package frontmatter
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,6 +22,27 @@ type FileAnalysis struct {
 
 func AnalyzeFile(path string, template map[string]interface{}) (FileAnalysis, error) {
 	return FileAnalysis{}, ErrNotImplemented
+}
+
+func FindExtraProps(content string, template map[string]any) ([]string, error) {
+	fmRaw, err := ExtractFrontMatterBoundary(content)
+	if err != nil {
+		return nil, err
+	}
+
+	var current map[string]any
+	if err := yaml.Unmarshal([]byte(fmRaw), &current); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	var extras []string
+	for key := range current {
+		if _, inTemplate := template[key]; !inTemplate {
+			extras = append(extras, key)
+		}
+	}
+	sort.Strings(extras)
+	return extras, nil
 }
 
 func (fa FileAnalysis) HasIssues() bool {
