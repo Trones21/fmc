@@ -74,9 +74,10 @@ func PlanChanges(path string, content string, template map[string]any, policies 
 			return plan, fmt.Errorf("key %q: %w", key, err)
 		}
 		if changed {
+			oldVal, _ := nestedGet(current, keyPath(key))
 			plan.Changes = append(plan.Changes, PropChange{
 				Key:      key,
-				OldValue: current[key],
+				OldValue: oldVal,
 				NewValue: newVal,
 			})
 		}
@@ -93,7 +94,7 @@ func projectedValue(current map[string]any, policy PropertyPolicy, ctx ResolveCo
 		return nil, false, nil
 
 	case ActionAddIfMissing:
-		if _, exists := current[policy.Key]; exists {
+		if _, exists := nestedGet(current, keyPath(policy.Key)); exists {
 			return nil, false, nil
 		}
 		val, err := ResolveValue(policy, ctx)
@@ -110,7 +111,7 @@ func projectedValue(current map[string]any, policy PropertyPolicy, ctx ResolveCo
 		return val, true, nil
 
 	case ActionOverwriteIfEmpty:
-		existing := current[policy.Key]
+		existing, _ := nestedGet(current, keyPath(policy.Key))
 		if existing != nil && existing != "" {
 			return nil, false, nil
 		}
@@ -123,6 +124,39 @@ func projectedValue(current map[string]any, policy PropertyPolicy, ctx ResolveCo
 	default:
 		return nil, false, ErrInvalidAction
 	}
+}
+
+func PlanRemoveIfEmpty(path string, content string, keys []string) (FileChangePlan, error) {
+	plan := FileChangePlan{FilePath: path}
+
+	fmRaw, err := ExtractFrontMatterBoundary(content)
+	if err != nil {
+		return plan, err
+	}
+
+	var current map[string]any
+	if err := yaml.Unmarshal([]byte(fmRaw), &current); err != nil {
+		return plan, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	for _, key := range keys {
+		val, exists := current[key]
+		if exists && (val == nil || val == "") {
+			plan.KeysToDelete = append(plan.KeysToDelete, key)
+		}
+	}
+	return plan, nil
+}
+
+func PlanRemoveExtraProps(path string, content string, template map[string]any) (FileChangePlan, error) {
+	plan := FileChangePlan{FilePath: path}
+
+	extras, err := FindExtraProps(content, template)
+	if err != nil {
+		return plan, err
+	}
+	plan.KeysToDelete = extras
+	return plan, nil
 }
 
 func ApplyChangePlan(plan FileChangePlan) error {
@@ -148,10 +182,10 @@ func ApplyChangePlan(plan FileChangePlan) error {
 	}
 
 	for _, key := range plan.KeysToDelete {
-		delete(current, key)
+		nestedDelete(current, keyPath(key))
 	}
 	for _, change := range plan.Changes {
-		current[change.Key] = change.NewValue
+		nestedSet(current, keyPath(change.Key), change.NewValue)
 	}
 
 	updated, err := yaml.Marshal(current)

@@ -133,17 +133,19 @@ func dispatchTransform(fn, fromKey string, ctx ResolveContext) (any, error) {
 	if fromKey == "" {
 		return nil, fmt.Errorf("transform %q requires a \"from\" key", fn)
 	}
-	sourceVal, ok := ctx.FrontMatter[fromKey]
+	sourceVal, ok := nestedGet(ctx.FrontMatter, keyPath(fromKey))
 	if !ok {
 		return nil, fmt.Errorf("transform %q: source key %q not found in front matter", fn, fromKey)
 	}
-	str, ok := sourceVal.(string)
-	if !ok {
-		return nil, fmt.Errorf("transform %q: source key %q is not a string", fn, fromKey)
-	}
 
 	switch fn {
+	case "copy":
+		return sourceVal, nil
 	case "slug":
+		str, ok := sourceVal.(string)
+		if !ok {
+			return nil, fmt.Errorf("transform %q: source key %q is not a string", fn, fromKey)
+		}
 		return toSlug(str), nil
 	default:
 		return nil, fmt.Errorf("unknown transform function %q", fn)

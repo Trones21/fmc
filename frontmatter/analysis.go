@@ -24,6 +24,68 @@ func AnalyzeFile(path string, template map[string]interface{}) (FileAnalysis, er
 	return FileAnalysis{}, ErrNotImplemented
 }
 
+// PropNode is a single key found while walking a property's YAML value.
+type PropNode struct {
+	Key   string
+	Depth int // 1 = direct child of the property, 2 = grandchild, etc.
+}
+
+// PropertyInspection is the result of inspecting one property in one file.
+type PropertyInspection struct {
+	PropKey  string
+	Present  bool
+	IsScalar bool // true when the value is not a map or slice (depth 0)
+	MaxDepth int
+	Nodes    []PropNode
+}
+
+// InspectProperty walks the YAML value of propKey and returns its structure.
+func InspectProperty(content string, propKey string) (PropertyInspection, error) {
+	result := PropertyInspection{PropKey: propKey}
+
+	fmRaw, err := ExtractFrontMatterBoundary(content)
+	if err != nil {
+		return result, err
+	}
+
+	var fm map[string]any
+	if err := yaml.Unmarshal([]byte(fmRaw), &fm); err != nil {
+		return result, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	val, exists := fm[propKey]
+	if !exists {
+		return result, nil
+	}
+	result.Present = true
+	result.Nodes = collectNodes(val, 1)
+	if len(result.Nodes) == 0 {
+		result.IsScalar = true
+	}
+	for _, n := range result.Nodes {
+		if n.Depth > result.MaxDepth {
+			result.MaxDepth = n.Depth
+		}
+	}
+	return result, nil
+}
+
+func collectNodes(v any, depth int) []PropNode {
+	var nodes []PropNode
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			nodes = append(nodes, PropNode{Key: k, Depth: depth})
+			nodes = append(nodes, collectNodes(child, depth+1)...)
+		}
+	case []any:
+		for _, item := range val {
+			nodes = append(nodes, collectNodes(item, depth)...)
+		}
+	}
+	return nodes
+}
+
 func FindMissingProps(content string, template map[string]any) ([]string, error) {
 	fmRaw, err := ExtractFrontMatterBoundary(content)
 	if err != nil {

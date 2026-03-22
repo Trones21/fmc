@@ -1,4 +1,4 @@
-# fmc — Front Matter Checker
+# fmc — Front Matter Canonicalizer
 
 A CLI tool for auditing and fixing YAML front matter in markdown files.
 
