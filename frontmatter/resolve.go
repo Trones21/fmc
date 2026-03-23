@@ -33,7 +33,7 @@ func dispatchComputed(policy PropertyPolicy, ctx ResolveContext) (any, error) {
 	case "path_segments":
 		return pathSegmentTags(policy.Params, ctx)
 	default:
-		return nil, fmt.Errorf("unknown computed function %q", policy.Fn)
+		return nil, fmt.Errorf("%w: computed %q", ErrUnknownFunction, policy.Fn)
 	}
 }
 
@@ -148,7 +148,7 @@ func dispatchTransform(fn, fromKey string, ctx ResolveContext) (any, error) {
 		}
 		return toSlug(str), nil
 	default:
-		return nil, fmt.Errorf("unknown transform function %q", fn)
+		return nil, fmt.Errorf("%w: transform %q", ErrUnknownFunction, fn)
 	}
 }
 

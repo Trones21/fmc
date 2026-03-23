@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,13 +16,55 @@ type FileAnalysis struct {
 
 	MissingProps     []string
 	ExtraProps       []string
+	EmptyProps       []string
 	OutOfOrder       bool
 	MissingOrEmptyID bool
 	HasFrontMatter   bool
 }
 
-func AnalyzeFile(path string, template map[string]interface{}) (FileAnalysis, error) {
-	return FileAnalysis{}, ErrNotImplemented
+// AnalyzeFile runs all checks against a single file. templateKeys may be nil
+// to skip the order check.
+func AnalyzeFile(path string, template map[string]any, templateKeys []string) (FileAnalysis, error) {
+	analysis := FileAnalysis{Path: path}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return analysis, fmt.Errorf("failed to read file: %w", err)
+	}
+	raw := string(content)
+
+	placement := AuditFrontMatterPlacement(raw)
+	analysis.Placement = placement
+	analysis.HasFrontMatter = placement.Status.IsProcessable()
+
+	if !placement.Status.IsProcessable() {
+		return analysis, nil
+	}
+
+	if template != nil {
+		if analysis.MissingProps, err = FindMissingProps(raw, template); err != nil {
+			return analysis, err
+		}
+		if analysis.ExtraProps, err = FindExtraProps(raw, template); err != nil {
+			return analysis, err
+		}
+		templateKeys2 := make([]string, 0, len(template))
+		for k := range template {
+			templateKeys2 = append(templateKeys2, k)
+		}
+		if analysis.EmptyProps, err = FindEmptyProps(raw, templateKeys2); err != nil {
+			return analysis, err
+		}
+	}
+
+	if len(templateKeys) > 0 && len(analysis.MissingProps) == 0 {
+		fileKeys, err := GetFrontMatterKeyOrder(raw)
+		if err == nil {
+			analysis.OutOfOrder = !IsOrderedByTemplate(fileKeys, templateKeys)
+		}
+	}
+
+	return analysis, nil
 }
 
 // PropNode is a single key found while walking a property's YAML value.
@@ -86,6 +129,54 @@ func collectNodes(v any, depth int) []PropNode {
 	return nodes
 }
 
+// FindEmptyProps returns the subset of keys that are present in the front
+// matter but have a nil, empty-string, or whitespace-only value.
+func FindEmptyProps(content string, keys []string) ([]string, error) {
+	fmRaw, err := ExtractFrontMatterBoundary(content)
+	if err != nil {
+		return nil, err
+	}
+
+	var current map[string]any
+	if err := yaml.Unmarshal([]byte(fmRaw), &current); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	var empty []string
+	for _, key := range keys {
+		val, exists := current[key]
+		if !exists {
+			continue
+		}
+		switch v := val.(type) {
+		case nil:
+			empty = append(empty, key)
+		case string:
+			if strings.TrimSpace(v) == "" {
+				empty = append(empty, key)
+			}
+		}
+	}
+	return empty, nil
+}
+
+// GetFrontMatterMap parses the front matter of content into a map.
+// Returns an empty map (not an error) when the file has no front matter.
+func GetFrontMatterMap(content string) (map[string]any, error) {
+	fmRaw, err := ExtractFrontMatterBoundary(content)
+	if err != nil {
+		return map[string]any{}, nil // no front matter
+	}
+	var fm map[string]any
+	if err := yaml.Unmarshal([]byte(fmRaw), &fm); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+	if fm == nil {
+		return map[string]any{}, nil
+	}
+	return fm, nil
+}
+
 func FindMissingProps(content string, template map[string]any) ([]string, error) {
 	fmRaw, err := ExtractFrontMatterBoundary(content)
 	if err != nil {
@@ -132,46 +223,8 @@ func (fa FileAnalysis) HasIssues() bool {
 	return !fa.Placement.Status.IsOK() ||
 		len(fa.MissingProps) > 0 ||
 		len(fa.ExtraProps) > 0 ||
+		len(fa.EmptyProps) > 0 ||
 		fa.OutOfOrder ||
 		fa.MissingOrEmptyID
 }
 
-func processFile(path string, template map[string]interface{}) (FileAnalysis, error) {
-	analysis := FileAnalysis{
-		Path: path,
-	}
-
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return analysis, fmt.Errorf("failed to read file: %w", err)
-	}
-
-	raw := string(content)
-
-	placement := AuditFrontMatterPlacement(raw)
-	analysis.Placement = placement
-	analysis.HasFrontMatter = placement.Status.IsOK()
-
-	if !placement.Status.IsOK() {
-		return analysis, nil
-	}
-
-	frontMatter, err := ExtractFrontMatterBoundary(raw)
-	if err != nil {
-		return analysis, fmt.Errorf("failed to extract front matter: %w", err)
-	}
-
-	var frontMatterKVs map[string]interface{}
-	err = yaml.Unmarshal([]byte(frontMatter), &frontMatterKVs)
-	if err != nil {
-		return analysis, fmt.Errorf("failed to parse YAML front matter: %w", err)
-	}
-
-	for key := range template {
-		if _, exists := frontMatterKVs[key]; !exists {
-			analysis.MissingProps = append(analysis.MissingProps, key)
-		}
-	}
-
-	return analysis, nil
-}

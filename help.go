@@ -57,6 +57,7 @@ func printHelp() {
 	printFlag(out, "replaceKey", "<OldKey:NewKey>")
 	printFlag(out, "createSlug", "<FromKey:ToKey[:action]>")
 	printFlag(out, "genID", "")
+	printFlag(out, "listEmpty", "<propertyName>")
 	printFlag(out, "removeEmpty", "<propertyName>")
 
 	section(out, "Make Changes — Multi Property:")

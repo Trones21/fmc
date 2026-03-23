@@ -155,6 +155,32 @@ func TestSetValueTransformLift(t *testing.T) {
 	assertNotContains(t, content, "\n    date:")
 }
 
+func TestListEmpty(t *testing.T) {
+	// gang-of-four.md has Last_Update: "" and Tags: [""] (non-empty list, won't match)
+	// quasi-design-patterns.md has Last_Update: ""
+	output := runFmc(t,
+		"-listEmpty", "Last_Update",
+		"-files", "example-files/gang-of-four.md,example-files/quasi-design-patterns.md",
+	)
+	assertContains(t, output, "gang-of-four.md")
+	assertContains(t, output, "quasi-design-patterns.md")
+	assertContains(t, output, "Last_Update")
+	// summary should show count of 2
+	assertContains(t, output, "| Last_Update | 2 |")
+}
+
+func TestListEmptyWhitespace(t *testing.T) {
+	// Create a temp file with a whitespace-only property value
+	dir := t.TempDir()
+	content := "---\nid: \"ws-test\"\ntitle: \"   \"\n---\nBody.\n"
+	if err := os.WriteFile(filepath.Join(dir, "ws.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	output := runFmc(t, "-listEmpty", "title", "-dir", dir)
+	assertContains(t, output, "ws.md")
+	assertContains(t, output, "title")
+}
+
 func TestRemoveEmpty(t *testing.T) {
 	// gang-of-four.md has Last_Update: "" — should be deleted.
 	dir := copyToTemp(t, "gang-of-four.md")

@@ -77,32 +77,48 @@ func AuditFrontMatterPlacement(content string) PlacementResult {
 		}
 	}
 
-	trimmedPrefix := ""
 	for i, line := range lines {
-		if line == "---" {
-			prefix := strings.Join(lines[:i], "\n")
-			trimmedPrefix = strings.TrimSpace(prefix)
+		if line != "---" {
+			continue
+		}
 
-			candidate := &BoundaryCandidate{
-				StartLine:    i + 1,
-				StartColumn:  1,
-				OpeningFence: "---",
-				Status:       BoundaryValid,
+		// Find the closing fence.
+		closingIdx := -1
+		for j := i + 1; j < len(lines); j++ {
+			if lines[j] == "---" {
+				closingIdx = j
+				break
 			}
+		}
 
-			if trimmedPrefix == "" {
-				return PlacementResult{
-					Status:    PlacementWhitespaceOnly,
-					Candidate: candidate,
-					Reason:    "only whitespace precedes candidate front matter",
-				}
-			}
+		// No closing fence, or the block between the fences contains no YAML
+		// key:value lines — this "---" is a markdown separator, not front matter.
+		if closingIdx == -1 || !blockContainsYAMLKeys(lines[i+1:closingIdx]) {
+			continue
+		}
 
+		prefix := strings.Join(lines[:i], "\n")
+		trimmedPrefix := strings.TrimSpace(prefix)
+
+		candidate := &BoundaryCandidate{
+			StartLine:    i + 1,
+			StartColumn:  1,
+			OpeningFence: "---",
+			Status:       BoundaryValid,
+		}
+
+		if trimmedPrefix == "" {
 			return PlacementResult{
-				Status:    PlacementManualReview,
+				Status:    PlacementWhitespaceOnly,
 				Candidate: candidate,
-				Reason:    "non-whitespace content precedes candidate front matter",
+				Reason:    "only whitespace precedes candidate front matter",
 			}
+		}
+
+		return PlacementResult{
+			Status:    PlacementManualReview,
+			Candidate: candidate,
+			Reason:    "non-whitespace content precedes candidate front matter",
 		}
 	}
 
@@ -110,4 +126,36 @@ func AuditFrontMatterPlacement(content string) PlacementResult {
 		Status: PlacementMissing,
 		Reason: "no front matter start boundary found",
 	}
+}
+
+// blockContainsYAMLKeys reports whether any line in the block looks like a
+// YAML key (starts with a letter or underscore and contains a colon after
+// a run of valid identifier characters).
+func blockContainsYAMLKeys(lines []string) bool {
+	for _, line := range lines {
+		if isYAMLKeyLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func isYAMLKeyLine(line string) bool {
+	if len(line) == 0 {
+		return false
+	}
+	ch := line[0]
+	if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_') {
+		return false
+	}
+	colonIdx := strings.Index(line, ":")
+	if colonIdx < 1 {
+		return false
+	}
+	for _, c := range line[:colonIdx] {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }

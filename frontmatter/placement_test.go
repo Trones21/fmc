@@ -33,6 +33,21 @@ func TestAuditFrontMatterPlacement(t *testing.T) {
 			expectedStatus: frontmatter.PlacementMissing,
 		},
 		{
+			name:           "markdown separator dashes not mistaken for front matter",
+			content:        "# Heading\n\nSome content.\n\n---\n\n## Section Two\n",
+			expectedStatus: frontmatter.PlacementMissing,
+		},
+		{
+			name:           "multiple markdown separators before real front matter candidate",
+			content:        "# Title\n\n---\n\n## Section\n\ncontent\n\n---\ntitle: Real FM\nid: abc\n---\nbody",
+			expectedStatus: frontmatter.PlacementManualReview,
+		},
+		{
+			name:           "separator with no closing fence is skipped",
+			content:        "intro\n\n---\n\n## Just markdown, no second fence",
+			expectedStatus: frontmatter.PlacementMissing,
+		},
+		{
 			name:           "empty content",
 			content:        "",
 			expectedStatus: frontmatter.PlacementMissing,

@@ -41,13 +41,14 @@ func TestResolveValue(t *testing.T) {
 			expectedErr: nil,
 		},
 		{
-			name: "computed source not implemented",
+			name: "computed unknown function returns error",
 			policy: frontmatter.PropertyPolicy{
 				Key:    "slug",
 				Source: frontmatter.SourceComputed,
+				Fn:     "notafunction",
 			},
 			expectedVal: nil,
-			expectedErr: frontmatter.ErrNotImplemented,
+			expectedErr: frontmatter.ErrUnknownFunction,
 		},
 		{
 			name: "LLM source not implemented",

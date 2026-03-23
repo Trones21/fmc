@@ -47,11 +47,15 @@ type FrontMatterChecker struct {
 	AddMissingProps  bool
 	RemoveExtraProps bool
 	RemoveEmpty          repeatableFlag // each entry: property name
+	ListEmpty            repeatableFlag // each entry: property name
 	InspectProps         repeatableFlag // each entry: property name
 	PathKeep             int            // -1 = full path, 0 = filename only, N = last N dirs + filename
 	CreateFrontMatter    bool
+	OnManualReview       bool
 	FmDefaults           repeatableFlag // each entry: "key:value"
 	AnalyzeOrder         bool
+	AnalyzeSEO           bool
+	Plugin               string // "docs" or "blog"
 }
 
 func main() {
@@ -87,6 +91,8 @@ func main() {
 	listExtraProps := flag.Bool("listExtraProps", false, "List properties not defined in the template")
 	listMissingProps := flag.Bool("listMissingProps", false, "List template properties missing from each file")
 	analyzeOrder := flag.Bool("analyzeOrder", false, "Check whether each file's front matter keys match the template order (requires -t)")
+	analyzeSEO := flag.Bool("analyzeSEO", false, "Analyze SEO-relevant front matter properties (requires -plugin)")
+	plugin := flag.String("plugin", "", "Docusaurus plugin to target for SEO analysis: docs or blog")
 
 	///// Make Changes to Front Matter ///////
 	//Single Property CRUD
@@ -95,6 +101,7 @@ func main() {
 	flag.Var(&checker.CreateSlugs, "createSlug", "Create a URL slug from a property (repeatable; see: fmc help createSlug)")
 	flag.Var(&checker.SetValues, "setValue", "Set a property via static, computed, or llm source (repeatable; see: fmc help setValue)")
 	flag.Var(&checker.RemoveEmpty, "removeEmpty", "Remove a property if its value is empty or missing (repeatable)")
+	flag.Var(&checker.ListEmpty, "listEmpty", "List files where a property exists but is empty or whitespace (repeatable)")
 	flag.Var(&checker.InspectProps, "inspectProp", "Inspect nested YAML structure of a property across files (repeatable)")
 
 	///// Display Options /////
@@ -107,6 +114,7 @@ func main() {
 	addMissingProps := flag.Bool("addMissingProps", false, "Add any template keys missing from each file (empty value)")
 	removeExtraProps := flag.Bool("removeExtraProps", false, "Remove properties not defined in the template")
 	createFrontMatter := flag.Bool("createFrontMatter", false, "Add front matter to files that are missing it (requires -t)")
+	onManualReview := flag.Bool("onManualReview", false, "Used with -createFrontMatter: operate only on files flagged as manual_review")
 	flag.Var(&checker.FmDefaults, "fmDefault", "Default value for a property during -createFrontMatter (repeatable; key:value)")
 
 	//Other
@@ -148,7 +156,10 @@ func main() {
 	checker.FixOptions["fixOrder"] = *fixOrder
 	checker.GenID = *genID
 	checker.CreateFrontMatter = *createFrontMatter
+	checker.OnManualReview = *onManualReview
 	checker.AnalyzeOrder = *analyzeOrder
+	checker.AnalyzeSEO = *analyzeSEO
+	checker.Plugin = *plugin
 	checker.ListExtraProps = *listExtraProps
 	checker.ListMissingProps = *listMissingProps
 	checker.AddMissingProps = *addMissingProps
@@ -200,13 +211,24 @@ func (fmc *FrontMatterChecker) Run() error {
 		return fmc.removeEmpty(filesToProcess)
 	}
 
+	if len(fmc.ListEmpty) > 0 {
+		return fmc.listEmpty(filesToProcess)
+	}
+
+	if fmc.AnalyzeSEO {
+		if fmc.Plugin == "" {
+			return fmt.Errorf("-analyzeSEO requires -plugin (docs or blog)")
+		}
+		return fmc.analyzeSEO(filesToProcess)
+	}
+
 	template, err := fmc.loadTemplate()
 	if err != nil {
 		return err
 	}
 
 	var templateKeys []string
-	if fmc.AnalyzeOrder || fmc.FixOptions["fixOrder"] {
+	if (fmc.AnalyzeOrder || fmc.FixOptions["fixOrder"] || fmc.AnalyzeOnly) && fmc.TemplateFile != "" {
 		templateKeys, err = fmc.loadTemplateKeyOrder()
 		if err != nil {
 			return err
@@ -246,7 +268,7 @@ func (fmc *FrontMatterChecker) Run() error {
 	}
 
 	if fmc.AnalyzeOnly {
-		return fmc.analyzeFiles(filesToProcess, template)
+		return fmc.analyzeFiles(filesToProcess, template, templateKeys)
 	}
 
 	return fmc.fixFiles(filesToProcess, template, policies)
@@ -355,6 +377,84 @@ func (fmc *FrontMatterChecker) analyzeOrder(files []string, template map[string]
 	return nil
 }
 
+var seoKeysByPlugin = map[string][]string{
+	"docs": {"title", "description", "keywords", "image", "slug"},
+	"blog": {"title", "title_meta", "description", "keywords", "image", "slug"},
+}
+
+func (fmc *FrontMatterChecker) analyzeSEO(files []string) error {
+	keys, ok := seoKeysByPlugin[fmc.Plugin]
+	if !ok {
+		return fmt.Errorf("unknown plugin %q: expected docs or blog", fmc.Plugin)
+	}
+
+	type counts struct{ missing, empty int }
+	tally := make(map[string]*counts, len(keys))
+	for _, k := range keys {
+		tally[k] = &counts{}
+	}
+
+	total := len(files)
+	excluded := 0
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			total--
+			continue
+		}
+
+		fm, err := frontmatter.GetFrontMatterMap(string(content))
+		if err != nil {
+			fmt.Printf("warning: %s: %v\n", file, err)
+			total--
+			continue
+		}
+
+		if isBoolTrue(fm["unlisted"]) || isBoolTrue(fm["draft"]) {
+			excluded++
+			continue
+		}
+
+		for _, k := range keys {
+			val, exists := fm[k]
+			if !exists {
+				tally[k].missing++
+			} else if isEmptyVal(val) {
+				tally[k].empty++
+			}
+		}
+	}
+
+	analyzed := total - excluded
+	fmt.Printf("Total Files: %d\n", total)
+	fmt.Printf("Unlisted or Draft Files: %d\n", excluded)
+	fmt.Printf("SEO Analyzed Files: %d\n", analyzed)
+	fmt.Println()
+	fmt.Printf("SEO Analysis — plugin: %s\n\n", fmc.Plugin)
+	fmt.Println("| SEO Property | Missing | Empty |")
+	fmt.Println("|---|---|---|")
+	for _, k := range keys {
+		c := tally[k]
+		fmt.Printf("| %s | %d | %d |\n", k, c.missing, c.empty)
+	}
+	return nil
+}
+
+func isBoolTrue(v any) bool {
+	b, ok := v.(bool)
+	return ok && b
+}
+
+func isEmptyVal(v any) bool {
+	if v == nil {
+		return true
+	}
+	s, ok := v.(string)
+	return ok && strings.TrimSpace(s) == ""
+}
+
 func (fmc *FrontMatterChecker) loadConfig() error {
 	file, err := os.Open(fmc.ConfigFile)
 	if err != nil {
@@ -398,35 +498,67 @@ func (fmc *FrontMatterChecker) getFiles() ([]string, error) {
 	return files, nil
 }
 
-func (fmc *FrontMatterChecker) analyzeFiles(files []string, template map[string]any) error {
-	fmt.Println("| FullPath | Placement | Missing Props | Extra Props | Reason |")
-	fmt.Println("|---|---|---|---|---|")
+func (fmc *FrontMatterChecker) analyzeFiles(files []string, template map[string]any, templateKeys []string) error {
+	fmt.Println("| File | Placement | Missing Props | Extra Props | Empty Props | Order |")
+	fmt.Println("|---|---|---|---|---|---|")
 
+	total, noFM := 0, 0
+	missingPropsCount, extraPropsCount, emptyPropsCount, outOfOrderCount := 0, 0, 0, 0
 	for _, file := range files {
-		analysis, err := frontmatter.AnalyzeFile(file, template)
+		analysis, err := frontmatter.AnalyzeFile(file, template, templateKeys)
 		if err != nil {
-			fmt.Printf("| %s | error |  |  | %s |\n", file, err)
+			fmt.Printf("| %s | error | | | | | %s |\n", displayPath(file, fmc.PathKeep), err)
 			continue
+		}
+		total++
+		if !analysis.HasFrontMatter {
+			noFM++
+		}
+		if len(analysis.MissingProps) > 0 {
+			missingPropsCount++
+		}
+		if len(analysis.ExtraProps) > 0 {
+			extraPropsCount++
+		}
+		if len(analysis.EmptyProps) > 0 {
+			emptyPropsCount++
+		}
+		if analysis.OutOfOrder {
+			outOfOrderCount++
 		}
 
 		if fmc.IssuesOnly && !analysis.HasIssues() {
 			continue
 		}
 
-		fmt.Printf(
-			"| %s | %s | %s | %s | %s |\n",
-			analysis.Path,
+		order := "-"
+		if analysis.HasFrontMatter && len(templateKeys) > 0 && len(analysis.MissingProps) == 0 {
+			if analysis.OutOfOrder {
+				order = "out_of_order"
+			} else {
+				order = "ok"
+			}
+		}
+
+		fmt.Printf("| %s | %s | %s | %s | %s | %s |\n",
+			displayPath(file, fmc.PathKeep),
 			analysis.Placement.Status,
 			joinOrDash(analysis.MissingProps),
 			joinOrDash(analysis.ExtraProps),
-			valueOrDash(analysis.Placement.Reason),
+			joinOrDash(analysis.EmptyProps),
+			order,
 		)
-
-		if fmc.Verbose {
-			// print more detail lines later
-		}
 	}
 
+	fmt.Printf("\nFiles analyzed: %d\n", total)
+	fmt.Println()
+	fmt.Println("| Analysis Item | File Count |")
+	fmt.Println("|---|---|")
+	fmt.Printf("| Missing front matter | %d |\n", noFM)
+	fmt.Printf("| Missing properties from template | %d |\n", missingPropsCount)
+	fmt.Printf("| Extra properties | %d |\n", extraPropsCount)
+	fmt.Printf("| Properties with empty values | %d |\n", emptyPropsCount)
+	fmt.Printf("| Properties not in template order | %d |\n", outOfOrderCount)
 	return nil
 }
 
@@ -585,6 +717,11 @@ func (fmc *FrontMatterChecker) createFrontMatter(files []string, template map[st
 		defaults[parts[0]] = parts[1]
 	}
 
+	targetStatus := frontmatter.PlacementMissing
+	if fmc.OnManualReview {
+		targetStatus = frontmatter.PlacementManualReview
+	}
+
 	var plans []frontmatter.FrontMatterCreationPlan
 	for _, file := range files {
 		content, err := os.ReadFile(file)
@@ -592,7 +729,7 @@ func (fmc *FrontMatterChecker) createFrontMatter(files []string, template map[st
 			fmt.Printf("warning: could not read %s: %v\n", file, err)
 			continue
 		}
-		plan, err := frontmatter.PlanFrontMatterCreation(file, string(content), template, defaults, 5)
+		plan, err := frontmatter.PlanFrontMatterCreation(file, string(content), template, defaults, 5, targetStatus)
 		if err != nil {
 			fmt.Printf("warning: %s: %v\n", file, err)
 			continue
@@ -605,6 +742,27 @@ func (fmc *FrontMatterChecker) createFrontMatter(files []string, template map[st
 	if len(plans) == 0 {
 		fmt.Println("No files need front matter creation.")
 		return nil
+	}
+
+	// Warn about keys that will be blank and suggest follow-up commands.
+	var blankKeys []string
+	for k := range template {
+		if _, hasDefault := defaults[k]; !hasDefault {
+			blankKeys = append(blankKeys, k)
+		}
+	}
+	sort.Strings(blankKeys)
+	if len(blankKeys) > 0 {
+		fmt.Printf("Note: %d key(s) have no -fmDefault and will be added blank: %s\n",
+			len(blankKeys), strings.Join(blankKeys, ", "))
+		suggestions := buildPostCreateSuggestions(blankKeys, fmc.Dir, fmc.Files)
+		if len(suggestions) > 0 {
+			fmt.Println("  After creation, consider running:")
+			for _, s := range suggestions {
+				fmt.Printf("    %s\n", s)
+			}
+		}
+		fmt.Println()
 	}
 
 	fmt.Printf("Will add front matter to %d file(s):\n", len(plans))
@@ -631,6 +789,50 @@ func (fmc *FrontMatterChecker) createFrontMatter(files []string, template map[st
 		}
 	}
 	return nil
+}
+
+// buildPostCreateSuggestions returns example fmc commands to populate blank
+// keys after front matter has been created. It recognises common naming
+// patterns (id → uuid, date/updated/modified → today).
+func buildPostCreateSuggestions(blankKeys []string, dir string, files []string) []string {
+	// Build the target part of the command ("-dir <dir>" or "-files <f1,f2>").
+	target := ""
+	if dir != "" {
+		target = fmt.Sprintf(" -dir %s", dir)
+	} else if len(files) > 0 {
+		target = fmt.Sprintf(" -files %s", strings.Join(files, ","))
+	}
+
+	datePatterns := []string{"date", "updated", "modified", "last_update", "created"}
+	isDateLike := func(k string) bool {
+		kl := strings.ToLower(k)
+		for _, p := range datePatterns {
+			if kl == p || strings.Contains(kl, p) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var suggestions []string
+	for _, k := range blankKeys {
+		kl := strings.ToLower(k)
+		switch {
+		case kl == "id":
+			suggestions = append(suggestions, fmt.Sprintf("fmc -setValue id:computed:uuid%s", target))
+		case isDateLike(k):
+			// Suggest the nested path if the key looks like a parent struct
+			// (e.g. last_update → last_update.date).
+			if kl == "last_update" || kl == "lastupdated" {
+				suggestions = append(suggestions, fmt.Sprintf("fmc -setValue %s.date:computed:today%s", k, target))
+			} else {
+				suggestions = append(suggestions, fmt.Sprintf("fmc -setValue %s:computed:today%s", k, target))
+			}
+		case kl == "slug" || kl == "url_slug":
+			suggestions = append(suggestions, fmt.Sprintf("fmc -setValue %s:transform:slug:title%s", k, target))
+		}
+	}
+	return suggestions
 }
 
 func (fmc *FrontMatterChecker) addMissingProps(files []string, template map[string]any) error {
@@ -744,6 +946,62 @@ func (fmc *FrontMatterChecker) inspectProps(files []string) error {
 			}
 		}
 		fmt.Println()
+	}
+	return nil
+}
+
+func (fmc *FrontMatterChecker) listEmpty(files []string) error {
+	keys := []string(fmc.ListEmpty)
+
+	fmt.Println("| File | Empty Props |")
+	fmt.Println("|---|---|")
+
+	counts := map[string]int{}
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("| %s | error: %v |\n", displayPath(file, fmc.PathKeep), err)
+			continue
+		}
+		empty, err := frontmatter.FindEmptyProps(string(content), keys)
+		if err != nil {
+			continue // no front matter or parse error — skip silently
+		}
+		if len(empty) == 0 {
+			continue
+		}
+		fmt.Printf("| %s | %s |\n", displayPath(file, fmc.PathKeep), strings.Join(empty, ", "))
+		for _, k := range empty {
+			counts[k]++
+		}
+	}
+
+	if len(counts) == 0 {
+		fmt.Println("\nNo empty properties found.")
+		return nil
+	}
+
+	type kv struct {
+		Key   string
+		Count int
+	}
+	ranked := make([]kv, 0, len(counts))
+	for k, v := range counts {
+		ranked = append(ranked, kv{k, v})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Count != ranked[j].Count {
+			return ranked[i].Count > ranked[j].Count
+		}
+		return ranked[i].Key < ranked[j].Key
+	})
+
+	fmt.Println("\nSummary:")
+	fmt.Println("| Property | Count |")
+	fmt.Println("|---|---|")
+	for _, entry := range ranked {
+		fmt.Printf("| %s | %d |\n", entry.Key, entry.Count)
 	}
 	return nil
 }

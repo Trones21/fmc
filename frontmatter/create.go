@@ -21,14 +21,14 @@ func (p FrontMatterCreationPlan) ShouldCreate() bool {
 }
 
 // PlanFrontMatterCreation returns a plan for adding front matter to path if
-// its content has PlacementMissing status. Files with any other placement
-// status are skipped (ShouldCreate returns false). Only keys present in
-// template are written; defaults supplies optional initial values.
-func PlanFrontMatterCreation(path, content string, template map[string]any, defaults map[string]any, previewLines int) (FrontMatterCreationPlan, error) {
+// its placement status matches targetStatus. Pass PlacementMissing for the
+// normal workflow; pass PlacementManualReview for the -onManualReview workflow.
+// Files that don't match are skipped (ShouldCreate returns false).
+func PlanFrontMatterCreation(path, content string, template map[string]any, defaults map[string]any, previewLines int, targetStatus PlacementStatus) (FrontMatterCreationPlan, error) {
 	plan := FrontMatterCreationPlan{FilePath: path}
 
 	placement := AuditFrontMatterPlacement(content)
-	if placement.Status != PlacementMissing {
+	if placement.Status != targetStatus {
 		return plan, nil
 	}
 
