@@ -141,7 +141,7 @@ func dispatchTransform(fn, fromKey string, ctx ResolveContext) (any, error) {
 	switch fn {
 	case "copy":
 		return sourceVal, nil
-	case "slug":
+	case "slug", "urlsafe":
 		str, ok := sourceVal.(string)
 		if !ok {
 			return nil, fmt.Errorf("transform %q: source key %q is not a string", fn, fromKey)

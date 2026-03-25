@@ -46,7 +46,10 @@ func printHelp() {
 	printFlag(out, "placementAudit", "")
 	printFlag(out, "listExtraProps", "")
 	printFlag(out, "listMissingProps", "")
-	printFlag(out, "listEmpty", "<propertyName>")
+	printFlag(out, "listEmpty", "")
+	printFlag(out, "listEmptyDetails", "")
+	printFlag(out, "listEmptyForKey", "<propertyName>")
+	printFlag(out, "sortBy", "<name|count>")
 	printFlag(out, "checkFormat", "<key:FORMAT>")
 	printFlag(out, "checkType", "<key:type>")
 	printFlag(out, "listValues", "<propertyName>")
@@ -63,7 +66,7 @@ func printHelp() {
 	section(out, "Make Changes — Single Property:")
 	printFlag(out, "setValue", "<key:source:value[:action]>")
 	printFlag(out, "replaceKey", "<OldKey:NewKey>")
-	printFlag(out, "createSlug", "<FromKey:ToKey[:action]>")
+	printFlag(out, "createFrom", "<from:to[:action][:transform:fn]>")
 	printFlag(out, "genID", "")
 	printFlag(out, "genIDOverwriteInvalid", "")
 	printFlag(out, "tryCast", "<key:type>")
@@ -73,8 +76,8 @@ func printHelp() {
 	printFlag(out, "createFrontMatter", "")
 	printFlag(out, "onManualReview", "")
 	printFlag(out, "fmDefault", "<key:value>")
-	printFlag(out, "keysToTop", "<key>")
-	printFlag(out, "keysToBottom", "<key>")
+	printFlag(out, "keysToTop", "<key1,key2,...>")
+	printFlag(out, "keysToBottom", "<key1,key2,...>")
 	printFlag(out, "addMissingProps", "")
 	printFlag(out, "removeExtraProps", "")
 	printFlag(out, "allProps", "")
@@ -91,6 +94,7 @@ func printHelp() {
 
 	fmt.Fprintln(out, "\nRun 'fmc -examples' for usage examples.")
 	fmt.Fprintln(out, "Run 'fmc help <flag>' for detailed help on a specific flag.")
+	fmt.Fprintln(out, "Run 'fmc commonWorkflows' for common multi-step cleanup sequences.")
 }
 
 func printExamples() {
@@ -104,8 +108,14 @@ func printExamples() {
   Find extra/misspelled keys across a directory:
     fmc -t template.json -dir ./docs -listExtraProps
 
-  List files where a property is empty:
-    fmc -listEmpty description -dir ./docs
+  Summary of empty properties across all keys:
+    fmc -listEmpty -dir ./docs
+
+  Per-file empty-property breakdown:
+    fmc -listEmptyDetails -sortBy name -dir ./docs
+
+  List files where a specific property is empty:
+    fmc -listEmptyForKey description -dir ./docs
 
   Check a date property conforms to a format:
     fmc -checkFormat "last_update.date:YYYYMMDD" -dir ./docs
@@ -138,7 +148,7 @@ func printExamples() {
     fmc -t template.json -createFrontMatter -onManualReview -dir ./docs
 
   Move id and title to the top, tags to the bottom:
-    fmc -keysToTop id -keysToTop title -keysToBottom tags -dir ./docs
+    fmc -keysToTop id,title -keysToBottom tags,last_update -dir ./docs
 
   Policy subcommand help:
     fmc policy help
@@ -148,7 +158,7 @@ func printExamples() {
     fmc help setValue
     fmc help addMissingProps
     fmc help removeExtraProps
-    fmc help createSlug
+    fmc help createFrom
     fmc help replaceKey
     fmc help createFrontMatter
     fmc help inspectProp
@@ -161,29 +171,36 @@ func printExamples() {
 
 func runHelpTopic(topic string) {
 	switch topic {
-	case "createSlug":
-		fmt.Print(`-createSlug FromKey:ToKey[:action]
+	case "createFrom":
+		fmt.Print(`-createFrom from:to[:action][:transform:fn]
 
-  Derives a URL-safe slug from an existing front matter property and writes it
-  to a new (or existing) property. Action controls when the value is written.
+  Derives the value of one front matter key from another, writing the result
+  to a destination key. An optional transform controls how the value is
+  produced; without one the source value is copied as-is.
 
 Actions:
-  (none)     add_if_missing — only set if the destination key is absent (default)
-  if_empty   overwrite_if_empty — set if the destination is absent or ""
-  always     overwrite_always — always overwrite the destination
+  (none)          add_if_missing — only set if the destination key is absent (default)
+  if_empty        set if the destination is absent or ""
+  always          always overwrite the destination
+
+Transforms:
+  (none)          copy — copy the source value unchanged
+  transform:copy       same as no transform
+  transform:urlsafe    URL-safe slug (lowercase, spaces→dashes, special chars stripped)
+  transform:slug       alias for urlsafe
 
 Examples:
-  Add a slug from title, only if slug is missing:
-    fmc -createSlug title:slug -dir ./docs
+  Copy title → display_title if missing:
+    fmc -createFrom title:display_title -dir ./docs
 
-  Overwrite slug whenever it is missing or empty:
-    fmc -createSlug title:slug:if_empty -dir ./docs
+  Build a URL-safe slug from title, only if slug is empty:
+    fmc -createFrom title:slug:if_empty:transform:urlsafe -dir ./docs
 
-  Always regenerate the slug from title:
-    fmc -createSlug title:slug:always -dir ./docs
+  Always regenerate slug from title:
+    fmc -createFrom title:slug:always:transform:urlsafe -dir ./docs
 
-  Multiple slugs in one pass:
-    fmc -createSlug title:slug -createSlug name:id_slug -dir ./docs
+  Multiple derivations in one pass:
+    fmc -createFrom title:slug:if_empty:transform:urlsafe -createFrom name:id_slug:always:transform:urlsafe -dir ./docs
 
 `)
 	case "replaceKey":
@@ -321,20 +338,39 @@ Examples:
 
 `)
 	case "listEmpty":
-		fmt.Print(`-listEmpty <propertyName>  (repeatable)
+		fmt.Print(`-listEmpty
+
+  Scans every key in every file and shows a ranked table of which properties
+  are most frequently empty (nil, "", or whitespace-only) across the whole set.
+
+-listEmptyDetails  (sortable with -sortBy name|count)
+
+  Per-file breakdown showing each file that has at least one empty property,
+  the count of empty properties, and the list of empty keys. Default sort is
+  by count descending; use -sortBy name for alphabetical by filename.
+
+-listEmptyForKey <propertyName>  (repeatable)
 
   Lists every file where the named property exists in the front matter but its
-  value is empty (nil, "", or whitespace-only). Files where the property is
-  absent are not reported — use -listMissingProps for that.
-
-  Pass the flag multiple times to check several properties in one pass.
+  value is empty. Files where the property is absent are not reported — use
+  -listMissingProps for that. Pass the flag multiple times to check several
+  properties in one pass.
 
 Examples:
+  Ranked empty-property summary across all keys:
+    fmc -listEmpty -dir ./docs
+
+  Per-file breakdown sorted by count (default):
+    fmc -listEmptyDetails -dir ./docs
+
+  Per-file breakdown sorted by filename:
+    fmc -listEmptyDetails -sortBy name -dir ./docs
+
   Find files with an empty description:
-    fmc -listEmpty description -dir ./docs
+    fmc -listEmptyForKey description -dir ./docs
 
   Check multiple properties at once:
-    fmc -listEmpty description -listEmpty tags -dir ./docs
+    fmc -listEmptyForKey description -listEmptyForKey tags -dir ./docs
 
 `)
 	case "checkFormat":
@@ -413,7 +449,7 @@ Examples:
 		fmt.Println("  fmc help setValue")
 		fmt.Println("  fmc help addMissingProps")
 		fmt.Println("  fmc help removeExtraProps")
-		fmt.Println("  fmc help createSlug")
+		fmt.Println("  fmc help createFrom")
 		fmt.Println("  fmc help replaceKey")
 		fmt.Println("  fmc help createFrontMatter")
 		fmt.Println("  fmc help inspectProp")
@@ -425,6 +461,39 @@ Examples:
 		fmt.Println("For the full flag list run: fmc help")
 		os.Exit(1)
 	}
+}
+
+func printCommonWorkflows() {
+	fmt.Print(`Common Workflows
+================
+
+These are multi-step sequences you can run during front matter cleanup.
+Each step is a separate fmc command — they are not composed automatically.
+
+──────────────────────────────────────────────────────────────────────
+Workflow: Find empty properties, then remove them
+──────────────────────────────────────────────────────────────────────
+
+Step 1 — See which properties are empty across your files:
+
+  fmc -listEmpty -dir ./docs
+
+  This shows a ranked table of which keys have the most empty values,
+  so you can decide what to clean up.
+
+Step 2a — Remove a specific set of empty keys:
+
+  fmc -removeEmpty "description,last_update" -dir ./docs
+
+Step 2b — Remove ALL empty keys across every file:
+
+  fmc -removeEmpty all -dir ./docs
+
+  Use the per-file breakdown first if you want to review before bulk-deleting:
+
+  fmc -listEmptyDetails -sortBy name -dir ./docs
+
+`)
 }
 
 func runPolicyCommand(args []string) {

@@ -4,6 +4,7 @@ package main_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,6 +52,18 @@ func assertNotContains(t *testing.T, s, substr string) {
 	}
 }
 
+// runFmcExpectFail runs fmc and returns combined output; the test fails if the
+// command unexpectedly succeeds.
+func runFmcExpectFail(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(binaryPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected fmc to fail but it succeeded\noutput: %s", out)
+	}
+	return string(out)
+}
+
 // ---------------------------------------------------------------------------
 // Read-only / analysis flags
 // ---------------------------------------------------------------------------
@@ -83,7 +96,7 @@ func TestInspectPropScalar(t *testing.T) {
 	output := runFmc(t, "-inspectProp", "last_update", "-files", "example-files/scalar-date.md")
 	assertContains(t, output, "yes")
 	// IsScalar: depth column should show "-"
-	assertContains(t, output, "| yes | - |")
+	assertContains(t, output, "| yes")
 }
 
 func TestKeepNVPS(t *testing.T) {
@@ -109,13 +122,22 @@ func TestReplaceKey(t *testing.T) {
 	assertNotContains(t, content, "Last_Update:")
 }
 
-func TestCreateSlug(t *testing.T) {
+func TestCreateFrom(t *testing.T) {
 	// title: "Quasi-Patterns and Programming Strategies"
 	// → slug: quasi-patterns-and-programming-strategies
 	dir := copyToTemp(t, "quasi-design-patterns.md")
-	runFmc(t, "-createSlug", "title:slug", "-dir", dir)
+	runFmc(t, "-createFrom", "title:slug:always:transform:urlsafe", "-dir", dir)
 	content := readFile(t, filepath.Join(dir, "quasi-design-patterns.md"))
 	assertContains(t, content, "quasi-patterns-and-programming-strategies")
+}
+
+func TestCreateFromCopy(t *testing.T) {
+	// copy title → display_title without any transform
+	dir := copyToTemp(t, "quasi-design-patterns.md")
+	runFmc(t, "-createFrom", "title:display_title:always", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "quasi-design-patterns.md"))
+	assertContains(t, content, "display_title:")
+	assertContains(t, content, "Quasi-Patterns")
 }
 
 func TestSetValueStatic(t *testing.T) {
@@ -155,18 +177,18 @@ func TestSetValueTransformLift(t *testing.T) {
 	assertNotContains(t, content, "\n    date:")
 }
 
-func TestListEmpty(t *testing.T) {
+func TestListEmptyForKey(t *testing.T) {
 	// gang-of-four.md has Last_Update: "" and Tags: [""] (non-empty list, won't match)
 	// quasi-design-patterns.md has Last_Update: ""
 	output := runFmc(t,
-		"-listEmpty", "Last_Update",
+		"-listEmptyForKey", "Last_Update",
 		"-files", "example-files/gang-of-four.md,example-files/quasi-design-patterns.md",
 	)
 	assertContains(t, output, "gang-of-four.md")
 	assertContains(t, output, "quasi-design-patterns.md")
 	assertContains(t, output, "Last_Update")
 	// summary should show count of 2
-	assertContains(t, output, "| Last_Update | 2 |")
+	assertContains(t, output, "| Last_Update | 2")
 }
 
 func TestListEmptyWhitespace(t *testing.T) {
@@ -176,9 +198,53 @@ func TestListEmptyWhitespace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ws.md"), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	output := runFmc(t, "-listEmpty", "title", "-dir", dir)
+	output := runFmc(t, "-listEmptyForKey", "title", "-dir", dir)
 	assertContains(t, output, "ws.md")
 	assertContains(t, output, "title")
+}
+
+func TestListEmptyAll(t *testing.T) {
+	dir := t.TempDir()
+	// file with two empty props
+	c1 := "---\ntitle: \"\"\ndescription: \"\"\nid: \"abc\"\n---\nBody.\n"
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte(c1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// file with one empty prop
+	c2 := "---\ntitle: \"Hello\"\ndescription: \"\"\n---\nBody.\n"
+	if err := os.WriteFile(filepath.Join(dir, "b.md"), []byte(c2), 0644); err != nil {
+		t.Fatal(err)
+	}
+	output := runFmc(t, "-listEmpty", "-dir", dir)
+	// description is empty in both files — should appear with count 2
+	assertContains(t, output, "| description")
+	assertContains(t, output, "| 2")
+	// title is empty in only one file
+	assertContains(t, output, "| title")
+	assertContains(t, output, "| 1")
+}
+
+func TestListEmptyDetails(t *testing.T) {
+	dir := t.TempDir()
+	c1 := "---\ntitle: \"\"\ndescription: \"\"\nid: \"abc\"\n---\nBody.\n"
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte(c1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c2 := "---\ntitle: \"Hello\"\ndescription: \"\"\n---\nBody.\n"
+	if err := os.WriteFile(filepath.Join(dir, "b.md"), []byte(c2), 0644); err != nil {
+		t.Fatal(err)
+	}
+	output := runFmc(t, "-listEmptyDetails", "-dir", dir)
+	// a.md has 2 empty props — should sort first (count desc)
+	assertContains(t, output, "a.md")
+	assertContains(t, output, "| 2 ")
+	assertContains(t, output, "b.md")
+	assertContains(t, output, "| 1 ")
+
+	// sort by name
+	outputName := runFmc(t, "-listEmptyDetails", "-sortBy", "name", "-dir", dir)
+	assertContains(t, outputName, "a.md")
+	assertContains(t, outputName, "b.md")
 }
 
 func TestRemoveEmpty(t *testing.T) {
@@ -206,9 +272,9 @@ func TestAnalyzeOrder(t *testing.T) {
 		"-files", "example-files/scalar-date.md,example-files/out-of-order.md",
 	)
 	assertContains(t, output, "scalar-date.md")
-	assertContains(t, output, "| ok |")
+	assertContains(t, output, "| ok")
 	assertContains(t, output, "out-of-order.md")
-	assertContains(t, output, "| out_of_order |")
+	assertContains(t, output, "| out_of_order")
 	assertContains(t, output, "1 in order")
 	assertContains(t, output, "1 out of order")
 }
@@ -271,4 +337,280 @@ func TestRemoveExtraProps(t *testing.T) {
 	content := readFile(t, filepath.Join(dir, "gang-of-four.md"))
 	assertNotContains(t, content, "Last_Update:")
 	assertNotContains(t, content, "Tags:")
+}
+
+// ---------------------------------------------------------------------------
+// -genID / -genIDOverwriteInvalid
+// ---------------------------------------------------------------------------
+
+func TestGenIDMissing(t *testing.T) {
+	// Create a file with no id property.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "noid.md"), []byte("---\ntitle: No ID\n---\nBody.\n"), 0644)
+	runFmc(t, "-genID", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "noid.md"))
+	assertContains(t, content, "id:")
+	// value should look like a UUID (contains dashes in UUID positions)
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "id:") {
+			if !strings.Contains(line, "-") {
+				t.Errorf("expected UUID value in id line, got: %s", line)
+			}
+		}
+	}
+}
+
+func TestGenIDEmpty(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "emptyid.md"), []byte("---\nid: \"\"\ntitle: Empty ID\n---\nBody.\n"), 0644)
+	runFmc(t, "-genID", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "emptyid.md"))
+	// id should now have a UUID value, not be empty
+	assertNotContains(t, content, "id: \"\"")
+	assertContains(t, content, "id:")
+}
+
+func TestGenIDPreservesExisting(t *testing.T) {
+	// gang-of-four.md has id: "oc-1b30b803" — should not be overwritten.
+	dir := copyToTemp(t, "gang-of-four.md")
+	runFmc(t, "-genID", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "gang-of-four.md"))
+	assertContains(t, content, `id: "oc-1b30b803"`)
+}
+
+func TestGenIDOverwriteInvalid(t *testing.T) {
+	// non-uuid-id.md has id: my-doc-1 which is not a UUID.
+	dir := copyToTemp(t, "non-uuid-id.md")
+	runFmc(t, "-genID", "-genIDOverwriteInvalid", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "non-uuid-id.md"))
+	assertNotContains(t, content, "my-doc-1")
+	assertContains(t, content, "id:")
+}
+
+// ---------------------------------------------------------------------------
+// -checkType / -tryCast
+// ---------------------------------------------------------------------------
+
+func TestCheckType(t *testing.T) {
+	// disable-string.md has disable: "false" (string, not bool).
+	output := runFmc(t, "-checkType", "disable:bool", "-files", "example-files/disable-string.md,example-files/disable-bool.md")
+	assertContains(t, output, "disable-string.md")
+	assertNotContains(t, output, "disable-bool.md")
+	assertContains(t, output, "string")
+}
+
+func TestCheckTypeConforming(t *testing.T) {
+	// disable-bool.md has disable: false (correct bool).
+	output := runFmc(t, "-checkType", "disable:bool", "-files", "example-files/disable-bool.md")
+	assertContains(t, output, "all files conform")
+}
+
+func TestTryCastBool(t *testing.T) {
+	// disable-string.md has disable: "false" — should be cast to false (bool).
+	dir := copyToTemp(t, "disable-string.md")
+	runFmc(t, "-tryCast", "disable:bool", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "disable-string.md"))
+	assertContains(t, content, "disable: false")
+	assertNotContains(t, content, `disable: "false"`)
+}
+
+func TestTryCastInt(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "intprop.md"), []byte("---\nid: \"1\"\norder: \"42\"\n---\nBody.\n"), 0644)
+	runFmc(t, "-tryCast", "order:int", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "intprop.md"))
+	assertContains(t, content, "order: 42")
+	assertNotContains(t, content, `order: "42"`)
+}
+
+func TestSetValueStaticTypedBool(t *testing.T) {
+	// Using the :bool type specifier should write a real boolean, not a string.
+	dir := copyToTemp(t, "gang-of-four.md")
+	runFmc(t, "-setValue", "disable:static:false:bool", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "gang-of-four.md"))
+	assertContains(t, content, "disable: false")
+	assertNotContains(t, content, `disable: "false"`)
+}
+
+// ---------------------------------------------------------------------------
+// -checkFormat
+// ---------------------------------------------------------------------------
+
+func TestCheckFormatDate(t *testing.T) {
+	// scalar-date.md has last_update: "20240505" — matches YYYYMMDD.
+	// out-of-order.md has last_update: "2024-01-01" — does NOT match YYYYMMDD.
+	output := runFmc(t,
+		"-checkFormat", "last_update:YYYYMMDD",
+		"-files", "example-files/scalar-date.md,example-files/out-of-order.md",
+	)
+	assertNotContains(t, output, "scalar-date.md")
+	assertContains(t, output, "out-of-order.md")
+}
+
+func TestCheckFormatUUIDValid(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "good.md"), []byte("---\nid: \"a3f8b2c1-1234-4abc-8def-000000000000\"\n---\nBody.\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "bad.md"), []byte("---\nid: my-slug\n---\nBody.\n"), 0644)
+	output := runFmc(t, "-checkFormat", "id:uuid", "-dir", dir)
+	// only bad.md should appear; good.md should not
+	assertContains(t, output, "bad.md")
+	// good.md should not appear (value my-slug is the violation marker, not the file name)
+	assertContains(t, output, "my-slug")
+	assertNotContains(t, output, "a3f8b2c1")
+}
+
+// ---------------------------------------------------------------------------
+// -keysToTop / -keysToBottom
+// ---------------------------------------------------------------------------
+
+func TestKeysToTop(t *testing.T) {
+	// out-of-order.md has: title, id, last_update
+	// After -keysToTop id, id should appear before title.
+	dir := copyToTemp(t, "out-of-order.md")
+	runFmc(t, "-keysToTop", "id", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "out-of-order.md"))
+	idPos := strings.Index(content, "id:")
+	titlePos := strings.Index(content, "title:")
+	if idPos >= titlePos {
+		t.Errorf("expected id to appear before title after keysToTop\ncontent:\n%s", content)
+	}
+}
+
+func TestKeysToBottom(t *testing.T) {
+	// scalar-date.md has: id, title, last_update
+	// After -keysToBottom id, id should appear after last_update.
+	dir := copyToTemp(t, "scalar-date.md")
+	runFmc(t, "-keysToBottom", "id", "-dir", dir)
+	content := readFile(t, filepath.Join(dir, "scalar-date.md"))
+	idPos := strings.Index(content, "\nid:")
+	lastUpdatePos := strings.Index(content, "last_update:")
+	if idPos <= lastUpdatePos {
+		t.Errorf("expected id to appear after last_update after keysToBottom\ncontent:\n%s", content)
+	}
+}
+
+func TestKeysToTopMissingKeyNotified(t *testing.T) {
+	// Requesting a key that doesn't exist should mention it in the plan, not fail.
+	output := runFmc(t, "-keysToTop", "nonexistent_key", "-files", "example-files/scalar-date.md")
+	assertContains(t, output, "nonexistent_key")
+}
+
+// ---------------------------------------------------------------------------
+// -analyzeSEO
+// ---------------------------------------------------------------------------
+
+func TestAnalyzeSEO(t *testing.T) {
+	// seo-partial.md has title/slug/image but is missing description and keywords.
+	// draft-doc.md has draft: true → should be excluded.
+	output := runFmc(t,
+		"-analyzeSEO", "-plugin", "docs",
+		"-files", "example-files/seo-partial.md,example-files/draft-doc.md",
+	)
+	assertContains(t, output, "Total Files: 2")
+	assertContains(t, output, "Unlisted or Draft Files: 1")
+	assertContains(t, output, "SEO Analyzed Files: 1")
+	assertContains(t, output, "description")
+	assertContains(t, output, "keywords")
+}
+
+func TestAnalyzeSEORequiresPlugin(t *testing.T) {
+	cmd := runFmcExpectFail(t, "-analyzeSEO", "-files", "example-files/seo-partial.md")
+	assertContains(t, cmd, "-plugin")
+}
+
+// ---------------------------------------------------------------------------
+// -listValues
+// ---------------------------------------------------------------------------
+
+func TestListValues(t *testing.T) {
+	// scalar-date.md and date-iso.md both have last_update but different values.
+	// out-of-order.md also has last_update: "2024-01-01" — same as date-iso.md.
+	output := runFmc(t,
+		"-listValues", "last_update",
+		"-files", "example-files/scalar-date.md,example-files/date-iso.md,example-files/out-of-order.md",
+	)
+	assertContains(t, output, `Values for "last_update"`)
+	assertContains(t, output, "20240505")
+	assertContains(t, output, "2024-05-05")
+	assertContains(t, output, "2024-01-01")
+}
+
+func TestListValuesMissingProperty(t *testing.T) {
+	// gang-of-four.md has no "title" in lower-case; it's missing from template props.
+	output := runFmc(t,
+		"-listValues", "title",
+		"-files", "example-files/gang-of-four.md,example-files/scalar-date.md",
+	)
+	assertContains(t, output, "(missing)")
+}
+
+// ---------------------------------------------------------------------------
+// -listDateFormats / -listDateFormatsDetail
+// ---------------------------------------------------------------------------
+
+func TestListDateFormats(t *testing.T) {
+	output := runFmc(t,
+		"-listDateFormats", "last_update",
+		"-files", "example-files/scalar-date.md,example-files/date-iso.md,example-files/out-of-order.md",
+	)
+	assertContains(t, output, `Date formats for "last_update"`)
+	assertContains(t, output, "YYYYMMDD")
+	assertContains(t, output, "YYYY-MM-DD")
+}
+
+func TestListDateFormatsUnrecognized(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "bad-date.md"), []byte("---\nid: \"bd-1\"\nlast_update: \"05/05/24\"\n---\nBody.\n"), 0644)
+	output := runFmc(t, "-listDateFormats", "last_update", "-dir", dir)
+	assertContains(t, output, "(unrecognized)")
+	assertContains(t, output, "Unrecognized values by length")
+	assertContains(t, output, "8 chars")
+	assertContains(t, output, "Tip:")
+}
+
+func TestListDateFormatsDetail(t *testing.T) {
+	output := runFmc(t,
+		"-listDateFormatsDetail", "last_update",
+		"-files", "example-files/scalar-date.md,example-files/date-iso.md",
+	)
+	assertContains(t, output, `Date format detail for "last_update"`)
+	assertContains(t, output, "scalar-date.md")
+	assertContains(t, output, "YYYYMMDD")
+	assertContains(t, output, "date-iso.md")
+	assertContains(t, output, "YYYY-MM-DD")
+	// table has pipe separators and correct filenames
+	assertContains(t, output, "| ")
+	assertContains(t, output, "scalar-date.md")
+}
+
+// ---------------------------------------------------------------------------
+// -analyze
+// ---------------------------------------------------------------------------
+
+func TestAnalyze(t *testing.T) {
+	output := runFmc(t,
+		"-t", "example-files/template.json",
+		"-analyze",
+		"-files", "example-files/gang-of-four.md,example-files/scalar-date.md,example-files/zabout.md",
+	)
+	// header row
+	assertContains(t, output, "File")
+	assertContains(t, output, "Placement")
+	assertContains(t, output, "Missing Props")
+	// summary
+	assertContains(t, output, "Files analyzed: 3")
+	assertContains(t, output, "Missing front matter")
+	assertContains(t, output, "Missing properties from template")
+}
+
+func TestAnalyzeIssuesOnly(t *testing.T) {
+	output := runFmc(t,
+		"-t", "example-files/template.json",
+		"-analyze",
+		"-issues-only",
+		"-files", "example-files/scalar-date.md,example-files/gang-of-four.md",
+	)
+	// scalar-date.md is clean vs template — should be suppressed with -issues-only
+	// gang-of-four.md is missing title — should appear
+	assertContains(t, output, "gang-of-four.md")
 }

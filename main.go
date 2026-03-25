@@ -46,12 +46,15 @@ type FrontMatterChecker struct {
 	ListExtraProps   bool
 	ListMissingProps bool
 	ReplaceKeys      repeatableFlag // each entry: "OldKey:NewKey"
-	CreateSlugs      repeatableFlag // each entry: "FromKey:ToKey[:action]"
+	CreateFrom       repeatableFlag // each entry: "FromKey:ToKey[:action][:transform:fn]"
 	SetValues        repeatableFlag // each entry: "key:source:value[:action]"
 	AddMissingProps  bool
 	RemoveExtraProps bool
-	RemoveEmpty          repeatableFlag // each entry: property name
-	ListEmpty            repeatableFlag // each entry: property name
+	RemoveEmpty          string // CSV of property names, or "all"
+	ListEmpty            bool           // scan all keys, show empty-counts table
+	ListEmptyDetails     bool           // per-file breakdown: file | # empty | keys
+	ListEmptyForKey      repeatableFlag // each entry: property name
+	SortBy               string         // "name" or "count" for list-empty outputs
 	InspectProps         repeatableFlag // each entry: property name
 	PathKeep             int            // -1 = full path, 0 = filename only, N = last N dirs + filename
 	CreateFrontMatter    bool
@@ -63,8 +66,8 @@ type FrontMatterChecker struct {
 	CheckFormats         repeatableFlag // each entry: "key:FORMAT"
 	CheckTypes           repeatableFlag // each entry: "key:type"
 	TryCast              repeatableFlag // each entry: "key:type"
-	KeysToTop            repeatableFlag // keys to move to the front
-	KeysToBottom         repeatableFlag // keys to move to the end
+	KeysToTop            string // CSV of keys to move to the front, in order
+	KeysToBottom         string // CSV of keys to move to the end, in order
 	ListValues           repeatableFlag // each entry: property name
 	ListDateFormats       repeatableFlag // each entry: property name
 	ListDateFormatsDetail repeatableFlag // each entry: property name
@@ -76,6 +79,14 @@ func main() {
 		runPolicyCommand(os.Args[2:])
 		return
 	}
+
+	// commonWorkflows subcommand
+	if len(os.Args) > 1 && os.Args[1] == "commonWorkflows" {
+		printCommonWorkflows()
+		return
+	}
+
+	flag.Usage = printHelp
 
 	checker := &FrontMatterChecker{
 		FixOptions: make(map[string]bool),
@@ -117,20 +128,21 @@ func main() {
 	flag.Var(&listDateFormatsDetail, "listDateFormatsDetail", "Per-file table: file | format | length | value (greppable; repeatable)")
 	var tryCast repeatableFlag
 	flag.Var(&tryCast, "tryCast", "Cast a property's value to the target type, e.g. disable:bool (repeatable)")
-	var keysToTop repeatableFlag
-	flag.Var(&keysToTop, "keysToTop", "Move this key to the front of the front matter (repeatable, order matters)")
-	var keysToBottom repeatableFlag
-	flag.Var(&keysToBottom, "keysToBottom", "Move this key to the end of the front matter (repeatable, order matters)")
+	keysToTop := flag.String("keysToTop", "", "CSV of keys to move to the front of the front matter, in order (e.g. id,title,slug)")
+	keysToBottom := flag.String("keysToBottom", "", "CSV of keys to move to the end of the front matter, in order (e.g. tags,last_update)")
 
 	///// Make Changes to Front Matter ///////
 	//Single Property CRUD
 	genID := flag.Bool("genID", false, "Generate a UUID for the id property when it is missing or empty")
 	genIDOverwriteInvalid := flag.Bool("genIDOverwriteInvalid", false, "Also overwrite id values that are not valid UUIDs (use with -genID)")
 	flag.Var(&checker.ReplaceKeys, "replaceKey", "Rename a key, keeping its value (repeatable; see: fmc help replaceKey)")
-	flag.Var(&checker.CreateSlugs, "createSlug", "Create a URL slug from a property (repeatable; see: fmc help createSlug)")
+	flag.Var(&checker.CreateFrom, "createFrom", "Derive a key from another key's value, with optional transform (repeatable; see: fmc help createFrom)")
 	flag.Var(&checker.SetValues, "setValue", "Set a property via static, computed, or llm source (repeatable; see: fmc help setValue)")
-	flag.Var(&checker.RemoveEmpty, "removeEmpty", "Remove a property if its value is empty or missing (repeatable)")
-	flag.Var(&checker.ListEmpty, "listEmpty", "List files where a property exists but is empty or whitespace (repeatable)")
+	flag.StringVar(&checker.RemoveEmpty, "removeEmpty", "", "Remove properties with empty values: 'all' or comma-separated key list (e.g. title,description)")
+	listEmpty := flag.Bool("listEmpty", false, "Show counts of empty properties across all keys in all files")
+	listEmptyDetails := flag.Bool("listEmptyDetails", false, "Per-file breakdown: file | # empty | empty keys (sortable with -sortBy)")
+	flag.Var(&checker.ListEmptyForKey, "listEmptyForKey", "List files where a specific property is empty or whitespace (repeatable)")
+	sortBy := flag.String("sortBy", "count", "Sort order for -listEmptyDetails: 'name' or 'count' (default: count)")
 	flag.Var(&checker.InspectProps, "inspectProp", "Inspect nested YAML structure of a property across files (repeatable)")
 
 	///// Display Options /////
@@ -202,12 +214,15 @@ func main() {
 	checker.ListDateFormats = listDateFormats
 	checker.ListDateFormatsDetail = listDateFormatsDetail
 	checker.TryCast = tryCast
-	checker.KeysToTop = keysToTop
-	checker.KeysToBottom = keysToBottom
+	checker.KeysToTop = *keysToTop
+	checker.KeysToBottom = *keysToBottom
 	checker.ListExtraProps = *listExtraProps
 	checker.ListMissingProps = *listMissingProps
 	checker.AddMissingProps = *addMissingProps
 	checker.RemoveExtraProps = *removeExtraProps
+	checker.ListEmpty = *listEmpty
+	checker.ListEmptyDetails = *listEmptyDetails
+	checker.SortBy = *sortBy
 
 	if *files != "" {
 		checker.Files = strings.Split(*files, ",")
@@ -247,20 +262,28 @@ func (fmc *FrontMatterChecker) Run() error {
 		return fmc.replaceKeys(filesToProcess)
 	}
 
-	if len(fmc.CreateSlugs) > 0 {
-		return fmc.createSlugs(filesToProcess)
+	if len(fmc.CreateFrom) > 0 {
+		return fmc.createFrom(filesToProcess)
 	}
 
 	if len(fmc.SetValues) > 0 {
 		return fmc.setValues(filesToProcess)
 	}
 
-	if len(fmc.RemoveEmpty) > 0 {
+	if fmc.RemoveEmpty != "" {
 		return fmc.removeEmpty(filesToProcess)
 	}
 
-	if len(fmc.ListEmpty) > 0 {
-		return fmc.listEmpty(filesToProcess)
+	if fmc.ListEmpty {
+		return fmc.listEmptyAll(filesToProcess)
+	}
+
+	if fmc.ListEmptyDetails {
+		return fmc.listEmptyDetails(filesToProcess)
+	}
+
+	if len(fmc.ListEmptyForKey) > 0 {
+		return fmc.listEmptyForKey(filesToProcess)
 	}
 
 	if fmc.AnalyzeSEO {
@@ -426,27 +449,26 @@ func (fmc *FrontMatterChecker) analyzeOrder(files []string, template map[string]
 		}
 	}
 
-	fmt.Println("| File | Order |")
-	fmt.Println("|---|---|")
-
+	tbl := NewTable("File", "Order")
 	inOrder, outOfOrder, excluded := 0, 0, 0
 	for _, r := range results {
 		switch r.status {
 		case "excluded":
 			excluded++
 			if !fmc.IssuesOnly {
-				fmt.Printf("| %s | excluded |\n", displayPath(r.path, fmc.PathKeep))
+				tbl.AddRow(displayPath(r.path, fmc.PathKeep), "excluded")
 			}
 		case "ok":
 			inOrder++
 			if !fmc.IssuesOnly {
-				fmt.Printf("| %s | ok |\n", displayPath(r.path, fmc.PathKeep))
+				tbl.AddRow(displayPath(r.path, fmc.PathKeep), "ok")
 			}
 		case "out_of_order":
 			outOfOrder++
-			fmt.Printf("| %s | out_of_order |\n", displayPath(r.path, fmc.PathKeep))
+			tbl.AddRow(displayPath(r.path, fmc.PathKeep), "out_of_order")
 		}
 	}
+	tbl.Print()
 
 	fmt.Printf("\nSummary: %d in order, %d out of order, %d excluded (missing template properties)\n",
 		inOrder, outOfOrder, excluded)
@@ -509,12 +531,12 @@ func (fmc *FrontMatterChecker) analyzeSEO(files []string) error {
 	fmt.Printf("SEO Analyzed Files: %d\n", analyzed)
 	fmt.Println()
 	fmt.Printf("SEO Analysis — plugin: %s\n\n", fmc.Plugin)
-	fmt.Println("| SEO Property | Missing | Empty |")
-	fmt.Println("|---|---|---|")
+	tbl := NewTable("SEO Property", "Missing", "Empty")
 	for _, k := range keys {
 		c := tally[k]
-		fmt.Printf("| %s | %d | %d |\n", k, c.missing, c.empty)
+		tbl.AddRow(k, fmt.Sprintf("%d", c.missing), fmt.Sprintf("%d", c.empty))
 	}
+	tbl.Print()
 	return nil
 }
 
@@ -854,12 +876,11 @@ func (fmc *FrontMatterChecker) runListDateFormats(files []string) error {
 func (fmc *FrontMatterChecker) runListDateFormatsDetail(files []string) error {
 	for _, key := range fmc.ListDateFormatsDetail {
 		fmt.Printf("Date format detail for %q:\n", key)
-		fmt.Printf("  %-42s  %-15s  %-6s  %s\n", "File", "Format", "Length", "Value")
-		fmt.Printf("  %s\n", strings.Repeat("-", 85))
+		tbl := NewTable("File", "Format", "Length", "Value")
 		for _, file := range files {
 			content, err := os.ReadFile(file)
 			if err != nil {
-				fmt.Printf("  warning: could not read %s: %v\n", file, err)
+				fmt.Printf("warning: could not read %s: %v\n", file, err)
 				continue
 			}
 			fm, err := frontmatter.GetFrontMatterMap(string(content))
@@ -882,8 +903,9 @@ func (fmc *FrontMatterChecker) runListDateFormatsDetail(files []string) error {
 					format = "(unrecognized)"
 				}
 			}
-			fmt.Printf("  %-42s  %-15s  %-6d  %s\n", displayPath(file, fmc.PathKeep), format, len(s), s)
+			tbl.AddRow(displayPath(file, fmc.PathKeep), format, fmt.Sprintf("%d", len(s)), s)
 		}
+		tbl.Print()
 		fmt.Println()
 	}
 	return nil
@@ -1046,6 +1068,22 @@ func (fmc *FrontMatterChecker) runCheckFormats(files []string) error {
 	return nil
 }
 
+// csvFields splits a comma-separated string into trimmed, non-empty fields.
+func csvFields(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func isBoolTrue(v any) bool {
 	b, ok := v.(bool)
 	return ok && b
@@ -1103,15 +1141,14 @@ func (fmc *FrontMatterChecker) getFiles() ([]string, error) {
 }
 
 func (fmc *FrontMatterChecker) analyzeFiles(files []string, template map[string]any, templateKeys []string) error {
-	fmt.Println("| File | Placement | Missing Props | Extra Props | Empty Props | Order |")
-	fmt.Println("|---|---|---|---|---|---|")
+	tbl := NewTable("File", "Placement", "Missing Props", "Extra Props", "Empty Props", "Order")
 
 	total, noFM := 0, 0
 	missingPropsCount, extraPropsCount, emptyPropsCount, outOfOrderCount := 0, 0, 0, 0
 	for _, file := range files {
 		analysis, err := frontmatter.AnalyzeFile(file, template, templateKeys)
 		if err != nil {
-			fmt.Printf("| %s | error | | | | | %s |\n", displayPath(file, fmc.PathKeep), err)
+			tbl.AddRow(displayPath(file, fmc.PathKeep), "error", "", "", "", err.Error())
 			continue
 		}
 		total++
@@ -1144,51 +1181,44 @@ func (fmc *FrontMatterChecker) analyzeFiles(files []string, template map[string]
 			}
 		}
 
-		fmt.Printf("| %s | %s | %s | %s | %s | %s |\n",
+		tbl.AddRow(
 			displayPath(file, fmc.PathKeep),
-			analysis.Placement.Status,
+			string(analysis.Placement.Status),
 			joinOrDash(analysis.MissingProps),
 			joinOrDash(analysis.ExtraProps),
 			joinOrDash(analysis.EmptyProps),
 			order,
 		)
 	}
+	tbl.Print()
 
-	fmt.Printf("\nFiles analyzed: %d\n", total)
-	fmt.Println()
-	fmt.Println("| Analysis Item | File Count |")
-	fmt.Println("|---|---|")
-	fmt.Printf("| Missing front matter | %d |\n", noFM)
-	fmt.Printf("| Missing properties from template | %d |\n", missingPropsCount)
-	fmt.Printf("| Extra properties | %d |\n", extraPropsCount)
-	fmt.Printf("| Properties with empty values | %d |\n", emptyPropsCount)
-	fmt.Printf("| Properties not in template order | %d |\n", outOfOrderCount)
+	fmt.Printf("\nFiles analyzed: %d\n\n", total)
+
+	summary := NewTable("Analysis Item", "File Count")
+	summary.AddRow("Missing front matter", fmt.Sprintf("%d", noFM))
+	summary.AddRow("Missing properties from template", fmt.Sprintf("%d", missingPropsCount))
+	summary.AddRow("Extra properties", fmt.Sprintf("%d", extraPropsCount))
+	summary.AddRow("Properties with empty values", fmt.Sprintf("%d", emptyPropsCount))
+	summary.AddRow("Properties not in template order", fmt.Sprintf("%d", outOfOrderCount))
+	summary.Print()
 	return nil
 }
 
 func (fmc *FrontMatterChecker) auditPlacement(files []string) error {
-	fmt.Println("| FullPath | Placement | Reason | Candidate Start Line |")
-	fmt.Println("|---|---|---|---|")
-
 	results, err := frontmatter.AuditPlacementFiles(files)
 	if err != nil {
 		return err
 	}
 
+	tbl := NewTable("File", "Placement", "Reason", "Candidate Start Line")
 	for _, result := range results {
 		startLine := ""
 		if result.Candidate != nil {
 			startLine = fmt.Sprintf("%d", result.Candidate.StartLine)
 		}
-
-		fmt.Printf("| %s | %s | %s | %s |\n",
-			result.FilePath,
-			result.Status,
-			result.Reason,
-			startLine,
-		)
+		tbl.AddRow(displayPath(result.FilePath, fmc.PathKeep), string(result.Status), result.Reason, startLine)
 	}
-
+	tbl.Print()
 	return nil
 }
 
@@ -1492,29 +1522,28 @@ func displayPath(path string, keep int) string {
 func (fmc *FrontMatterChecker) inspectProps(files []string) error {
 	for _, propKey := range fmc.InspectProps {
 		fmt.Printf("## Property: %s\n\n", propKey)
-		fmt.Println("| File | Present | Max Depth | Sub-properties |")
-		fmt.Println("|---|---|---|---|")
 
 		type nodeStats struct {
 			depths    map[int]bool
 			fileCount int
 		}
-		summary := map[string]*nodeStats{}
+		summaryStats := map[string]*nodeStats{}
 
+		tbl := NewTable("File", "Present", "Max Depth", "Sub-properties")
 		for _, file := range files {
 			label := displayPath(file, fmc.PathKeep)
 			content, err := os.ReadFile(file)
 			if err != nil {
-				fmt.Printf("| %s | error | - | %v |\n", label, err)
+				tbl.AddRow(label, "error", "-", err.Error())
 				continue
 			}
 			insp, err := frontmatter.InspectProperty(string(content), propKey)
 			if err != nil {
-				fmt.Printf("| %s | error | - | %v |\n", label, err)
+				tbl.AddRow(label, "error", "-", err.Error())
 				continue
 			}
 			if !insp.Present {
-				fmt.Printf("| %s | no | - | - |\n", label)
+				tbl.AddRow(label, "no", "-", "-")
 				continue
 			}
 			subKeys := make([]string, 0, len(insp.Nodes))
@@ -1524,13 +1553,13 @@ func (fmc *FrontMatterChecker) inspectProps(files []string) error {
 					subKeys = append(subKeys, n.Key)
 					seen[n.Key] = true
 				}
-				if _, ok := summary[n.Key]; !ok {
-					summary[n.Key] = &nodeStats{depths: map[int]bool{}}
+				if _, ok := summaryStats[n.Key]; !ok {
+					summaryStats[n.Key] = &nodeStats{depths: map[int]bool{}}
 				}
-				summary[n.Key].depths[n.Depth] = true
+				summaryStats[n.Key].depths[n.Depth] = true
 			}
 			for _, k := range subKeys {
-				summary[k].fileCount++
+				summaryStats[k].fileCount++
 			}
 			depthStr := "-"
 			if !insp.IsScalar {
@@ -1540,21 +1569,20 @@ func (fmc *FrontMatterChecker) inspectProps(files []string) error {
 			if len(subKeys) > 0 {
 				subStr = strings.Join(subKeys, ", ")
 			}
-			fmt.Printf("| %s | yes | %s | %s |\n", label, depthStr, subStr)
+			tbl.AddRow(label, "yes", depthStr, subStr)
 		}
+		tbl.Print()
 
-		if len(summary) > 0 {
-			fmt.Println()
-			fmt.Printf("### Summary\n\n")
-			fmt.Println("| Sub-property | Depths | File Count |")
-			fmt.Println("|---|---|---|")
-			keys := make([]string, 0, len(summary))
-			for k := range summary {
+		if len(summaryStats) > 0 {
+			fmt.Printf("\n### Summary\n\n")
+			keys := make([]string, 0, len(summaryStats))
+			for k := range summaryStats {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
+			sumTbl := NewTable("Sub-property", "Depths", "File Count")
 			for _, k := range keys {
-				st := summary[k]
+				st := summaryStats[k]
 				depths := make([]int, 0, len(st.depths))
 				for d := range st.depths {
 					depths = append(depths, d)
@@ -1564,50 +1592,17 @@ func (fmc *FrontMatterChecker) inspectProps(files []string) error {
 				for _, d := range depths {
 					depthStrs = append(depthStrs, fmt.Sprintf("%d", d))
 				}
-				fmt.Printf("| %s | %s | %d |\n", k, strings.Join(depthStrs, ", "), st.fileCount)
+				sumTbl.AddRow(k, strings.Join(depthStrs, ", "), fmt.Sprintf("%d", st.fileCount))
 			}
+			sumTbl.Print()
 		}
 		fmt.Println()
 	}
 	return nil
 }
 
-func (fmc *FrontMatterChecker) listEmpty(files []string) error {
-	keys := []string(fmc.ListEmpty)
-
-	fmt.Println("| File | Empty Props |")
-	fmt.Println("|---|---|")
-
-	counts := map[string]int{}
-
-	for _, file := range files {
-		content, err := os.ReadFile(file)
-		if err != nil {
-			fmt.Printf("| %s | error: %v |\n", displayPath(file, fmc.PathKeep), err)
-			continue
-		}
-		empty, err := frontmatter.FindEmptyProps(string(content), keys)
-		if err != nil {
-			continue // no front matter or parse error — skip silently
-		}
-		if len(empty) == 0 {
-			continue
-		}
-		fmt.Printf("| %s | %s |\n", displayPath(file, fmc.PathKeep), strings.Join(empty, ", "))
-		for _, k := range empty {
-			counts[k]++
-		}
-	}
-
-	if len(counts) == 0 {
-		fmt.Println("\nNo empty properties found.")
-		return nil
-	}
-
-	type kv struct {
-		Key   string
-		Count int
-	}
+func printRankedSummary(counts map[string]int) {
+	type kv struct{ Key string; Count int }
 	ranked := make([]kv, 0, len(counts))
 	for k, v := range counts {
 		ranked = append(ranked, kv{k, v})
@@ -1618,13 +1613,145 @@ func (fmc *FrontMatterChecker) listEmpty(files []string) error {
 		}
 		return ranked[i].Key < ranked[j].Key
 	})
-
-	fmt.Println("\nSummary:")
-	fmt.Println("| Property | Count |")
-	fmt.Println("|---|---|")
-	for _, entry := range ranked {
-		fmt.Printf("| %s | %d |\n", entry.Key, entry.Count)
+	tbl := NewTable("Property", "Count")
+	for _, e := range ranked {
+		tbl.AddRow(e.Key, fmt.Sprintf("%d", e.Count))
 	}
+	tbl.Print()
+}
+
+// listEmptyForKey reports files where the specified keys exist but are empty.
+func (fmc *FrontMatterChecker) listEmptyForKey(files []string) error {
+	keys := []string(fmc.ListEmptyForKey)
+	tbl := NewTable("File", "Empty Props")
+	counts := map[string]int{}
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			tbl.AddRow(displayPath(file, fmc.PathKeep), "error: "+err.Error())
+			continue
+		}
+		empty, err := frontmatter.FindEmptyProps(string(content), keys)
+		if err != nil {
+			continue
+		}
+		if len(empty) == 0 {
+			continue
+		}
+		tbl.AddRow(displayPath(file, fmc.PathKeep), strings.Join(empty, ", "))
+		for _, k := range empty {
+			counts[k]++
+		}
+	}
+	tbl.Print()
+
+	if len(counts) == 0 {
+		fmt.Println("\nNo empty properties found.")
+		return nil
+	}
+	fmt.Println("\nSummary:")
+	printRankedSummary(counts)
+	return nil
+}
+
+// listEmptyAll scans every key in each file and shows a ranked counts table
+// of which properties are most frequently empty.
+func (fmc *FrontMatterChecker) listEmptyAll(files []string) error {
+	counts := map[string]int{}
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		fm, err := frontmatter.GetFrontMatterMap(string(content))
+		if err != nil || fm == nil {
+			continue
+		}
+		keys := make([]string, 0, len(fm))
+		for k := range fm {
+			keys = append(keys, k)
+		}
+		empty, err := frontmatter.FindEmptyProps(string(content), keys)
+		if err != nil {
+			continue
+		}
+		for _, k := range empty {
+			counts[k]++
+		}
+	}
+
+	if len(counts) == 0 {
+		fmt.Println("No empty properties found.")
+		return nil
+	}
+	fmt.Printf("Empty property counts across %d files:\n\n", len(files))
+	printRankedSummary(counts)
+	return nil
+}
+
+type fileEmptyResult struct {
+	path  string
+	count int
+	keys  []string
+}
+
+// listEmptyDetails shows a per-file breakdown: file | # empty | empty keys.
+// Sortable by "name" or "count" via -sortBy (default: count desc).
+func (fmc *FrontMatterChecker) listEmptyDetails(files []string) error {
+	var results []fileEmptyResult
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		fm, err := frontmatter.GetFrontMatterMap(string(content))
+		if err != nil || fm == nil {
+			continue
+		}
+		keys := make([]string, 0, len(fm))
+		for k := range fm {
+			keys = append(keys, k)
+		}
+		empty, err := frontmatter.FindEmptyProps(string(content), keys)
+		if err != nil || len(empty) == 0 {
+			continue
+		}
+		sort.Strings(empty)
+		results = append(results, fileEmptyResult{
+			path:  displayPath(file, fmc.PathKeep),
+			count: len(empty),
+			keys:  empty,
+		})
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No empty properties found.")
+		return nil
+	}
+
+	switch fmc.SortBy {
+	case "name":
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].path < results[j].path
+		})
+	default: // "count" — descending
+		sort.Slice(results, func(i, j int) bool {
+			if results[i].count != results[j].count {
+				return results[i].count > results[j].count
+			}
+			return results[i].path < results[j].path
+		})
+	}
+
+	tbl := NewTable("File", "# Empty", "Empty Keys")
+	for _, r := range results {
+		tbl.AddRow(r.path, fmt.Sprintf("%d", r.count), strings.Join(r.keys, ", "))
+	}
+	tbl.Print()
+	fmt.Printf("\n%d file(s) with empty properties.\n", len(results))
 	return nil
 }
 
@@ -1637,7 +1764,19 @@ func (fmc *FrontMatterChecker) removeEmpty(files []string) error {
 			fmt.Printf("warning: could not read %s: %v\n", file, err)
 			continue
 		}
-		plan, err := frontmatter.PlanRemoveIfEmpty(file, string(content), []string(fmc.RemoveEmpty))
+		var keys []string
+		if fmc.RemoveEmpty == "all" {
+			fm, ferr := frontmatter.GetFrontMatterMap(string(content))
+			if ferr != nil || fm == nil {
+				continue
+			}
+			for k := range fm {
+				keys = append(keys, k)
+			}
+		} else {
+			keys = csvFields(fmc.RemoveEmpty)
+		}
+		plan, err := frontmatter.PlanRemoveIfEmpty(file, string(content), keys)
 		if err != nil {
 			fmt.Printf("warning: could not plan for %s: %v\n", file, err)
 			continue
@@ -1673,114 +1812,70 @@ func (fmc *FrontMatterChecker) removeExtraProps(files []string, template map[str
 }
 
 func (fmc *FrontMatterChecker) listExtraProps(files []string, template map[string]any) error {
-	fmt.Println("| File | Extra Props |")
-	fmt.Println("|---|---|")
-
+	tbl := NewTable("File", "Extra Props")
 	counts := map[string]int{}
 
 	for _, file := range files {
 		content, err := os.ReadFile(file)
 		if err != nil {
-			fmt.Printf("| %s | error: %v |\n", file, err)
+			tbl.AddRow(displayPath(file, fmc.PathKeep), "error: "+err.Error())
 			continue
 		}
 		extras, err := frontmatter.FindExtraProps(string(content), template)
 		if err != nil {
-			fmt.Printf("| %s | error: %v |\n", file, err)
+			tbl.AddRow(displayPath(file, fmc.PathKeep), "error: "+err.Error())
 			continue
 		}
-		fmt.Printf("| %s | %s |\n", file, joinOrDash(extras))
+		tbl.AddRow(displayPath(file, fmc.PathKeep), joinOrDash(extras))
 		for _, k := range extras {
 			counts[k]++
 		}
 	}
+	tbl.Print()
 
 	if len(counts) == 0 {
 		fmt.Println("\nNo extra properties found.")
 		return nil
 	}
-
-	type kv struct {
-		Key   string
-		Count int
-	}
-	ranked := make([]kv, 0, len(counts))
-	for k, v := range counts {
-		ranked = append(ranked, kv{k, v})
-	}
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].Count != ranked[j].Count {
-			return ranked[i].Count > ranked[j].Count
-		}
-		return ranked[i].Key < ranked[j].Key
-	})
-
 	fmt.Println("\nSummary:")
-	fmt.Println("| Property | Count |")
-	fmt.Println("|---|---|")
-	for _, entry := range ranked {
-		fmt.Printf("| %s | %d |\n", entry.Key, entry.Count)
-	}
-
+	printRankedSummary(counts)
 	return nil
 }
 
 func (fmc *FrontMatterChecker) listMissingProps(files []string, template map[string]any) error {
-	fmt.Println("| File | Missing Props |")
-	fmt.Println("|---|---|")
-
+	tbl := NewTable("File", "Missing Props")
 	counts := map[string]int{}
 
 	for _, file := range files {
 		content, err := os.ReadFile(file)
 		if err != nil {
-			fmt.Printf("| %s | error: %v |\n", file, err)
+			tbl.AddRow(displayPath(file, fmc.PathKeep), "error: "+err.Error())
 			continue
 		}
 		missing, err := frontmatter.FindMissingProps(string(content), template)
 		if err != nil {
-			fmt.Printf("| %s | error: %v |\n", file, err)
+			tbl.AddRow(displayPath(file, fmc.PathKeep), "error: "+err.Error())
 			continue
 		}
-		fmt.Printf("| %s | %s |\n", file, joinOrDash(missing))
+		tbl.AddRow(displayPath(file, fmc.PathKeep), joinOrDash(missing))
 		for _, k := range missing {
 			counts[k]++
 		}
 	}
+	tbl.Print()
 
 	if len(counts) == 0 {
 		fmt.Println("\nNo missing properties found.")
 		return nil
 	}
-
-	type kv struct {
-		Key   string
-		Count int
-	}
-	ranked := make([]kv, 0, len(counts))
-	for k, v := range counts {
-		ranked = append(ranked, kv{k, v})
-	}
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].Count != ranked[j].Count {
-			return ranked[i].Count > ranked[j].Count
-		}
-		return ranked[i].Key < ranked[j].Key
-	})
-
 	fmt.Println("\nSummary:")
-	fmt.Println("| Property | Count |")
-	fmt.Println("|---|---|")
-	for _, entry := range ranked {
-		fmt.Printf("| %s | %d |\n", entry.Key, entry.Count)
-	}
-
+	printRankedSummary(counts)
 	return nil
 }
 
 func (fmc *FrontMatterChecker) runReorder(files []string) error {
-	firstKeys := []string(fmc.KeysToTop)
-	lastKeys := []string(fmc.KeysToBottom)
+	firstKeys := csvFields(fmc.KeysToTop)
+	lastKeys := csvFields(fmc.KeysToBottom)
 
 	var plans []frontmatter.ReorderPlan
 	for _, file := range files {
@@ -1952,27 +2047,50 @@ func (fmc *FrontMatterChecker) replaceKeys(files []string) error {
 	return fmc.fixFiles(files, template, policies)
 }
 
-func (fmc *FrontMatterChecker) createSlugs(files []string) error {
+func (fmc *FrontMatterChecker) createFrom(files []string) error {
 	template := map[string]any{}
-	policies := make([]frontmatter.PropertyPolicy, 0, len(fmc.CreateSlugs))
+	policies := make([]frontmatter.PropertyPolicy, 0, len(fmc.CreateFrom))
 
-	for _, entry := range fmc.CreateSlugs {
-		parts := strings.SplitN(entry, ":", 3)
+	for _, entry := range fmc.CreateFrom {
+		// Format: from:to[:action][:transform:fn]
+		// Split on ":" but we need to find the optional "transform" segment.
+		// We consume parts left-to-right: from, to, then optional action keyword,
+		// then optional literal "transform" followed by fn name.
+		parts := strings.Split(entry, ":")
 		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("invalid -createSlug value %q: expected FromKey:ToKey[:action]", entry)
+			return fmt.Errorf("invalid -createFrom value %q: expected from:to[:action][:transform:fn]", entry)
 		}
 		fromKey, toKey := parts[0], parts[1]
+		rest := parts[2:]
 
 		action := frontmatter.ActionAddIfMissing
-		if len(parts) == 3 {
-			switch parts[2] {
+		fn := "copy"
+
+		// consume optional action keyword
+		if len(rest) > 0 {
+			switch rest[0] {
 			case "always":
 				action = frontmatter.ActionOverwriteAlways
+				rest = rest[1:]
 			case "if_empty":
 				action = frontmatter.ActionOverwriteIfEmpty
+				rest = rest[1:]
+			case "add_if_missing":
+				rest = rest[1:]
+			case "transform":
+				// no action specified, transform comes first
 			default:
-				return fmt.Errorf("invalid action %q in -createSlug %q: expected always|if_empty", parts[2], entry)
+				return fmt.Errorf("invalid action %q in -createFrom %q: expected always|if_empty|add_if_missing", rest[0], entry)
 			}
+		}
+
+		// consume optional transform:fn
+		if len(rest) >= 2 && rest[0] == "transform" {
+			fn = rest[1]
+		} else if len(rest) == 1 && rest[0] == "transform" {
+			return fmt.Errorf("invalid -createFrom value %q: 'transform' must be followed by a function name", entry)
+		} else if len(rest) > 0 {
+			return fmt.Errorf("invalid -createFrom value %q: unexpected segment %q", entry, rest[0])
 		}
 
 		template[toKey] = ""
@@ -1980,7 +2098,7 @@ func (fmc *FrontMatterChecker) createSlugs(files []string) error {
 			Key:     toKey,
 			Action:  action,
 			Source:  frontmatter.SourceTransform,
-			Fn:      "slug",
+			Fn:      fn,
 			FromKey: fromKey,
 		})
 	}
