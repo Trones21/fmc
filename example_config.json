@@ -1,0 +1,10 @@
+{
+  "openai": {
+    "api_key": "sk-...",
+    "model": "gpt-4o"
+  },
+  "llm": {
+    "content_date_field": "last_update.date",
+    "content_date_format": "YYYY-MM-DD"
+  }
+}

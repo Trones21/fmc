@@ -71,10 +71,15 @@ type FrontMatterChecker struct {
 	ListValues           repeatableFlag // each entry: property name
 	ListDateFormats       repeatableFlag // each entry: property name
 	ListDateFormatsDetail repeatableFlag // each entry: property name
-	GenerateSources       string         // source name to generate: "filepath"
+	GenerateSources       string         // source name to generate: "filepath" or "llm.<model>"
 	Rollup                string         // CSV: "tags", "keywords", or "tags,keywords"
 	RollupSources         string         // CSV of source paths, or "all"
 	RollupNoPreserve      bool           // replace existing tags/keywords instead of unioning
+	LLMFields             string         // CSV of fields to generate: title,description,tags,keywords
+	LLMSkipFresherThan    int            // skip file if date_last_generated is within N days (0 = disabled)
+	LLMRegenerateIfNewer  bool           // regenerate if content date field > date_last_generated
+	ApplyLLMTitle         string         // "<source[:action]>" e.g. "llm.gpt-4o:if_empty"
+	ApplyLLMDescription   string         // "<source[:action]>" e.g. "llm.gpt-4o:always"
 }
 
 func main() {
@@ -86,7 +91,11 @@ func main() {
 
 	// commonWorkflows subcommand
 	if len(os.Args) > 1 && os.Args[1] == "commonWorkflows" {
-		printCommonWorkflows()
+		if len(os.Args) > 2 {
+			runWorkflow(os.Args[2])
+		} else {
+			printWorkflowIndex()
+		}
 		return
 	}
 
@@ -134,10 +143,15 @@ func main() {
 	flag.Var(&tryCast, "tryCast", "Cast a property's value to the target type, e.g. disable:bool (repeatable)")
 	keysToTop := flag.String("keysToTop", "", "CSV of keys to move to the front of the front matter, in order (e.g. id,title,slug)")
 	keysToBottom := flag.String("keysToBottom", "", "CSV of keys to move to the end of the front matter, in order (e.g. tags,last_update)")
-	generateSources := flag.String("generateSources", "", "Populate tag_sources and keyword_sources from a source: filepath")
+	generateSources := flag.String("generateSources", "", "Populate tag/keyword/title/description sources: 'filepath' or 'llm.<model>' (e.g. llm.gpt-4o)")
 	rollup := flag.String("rollup", "", "Roll up staged sources into tags/keywords: tags, keywords, or tags,keywords")
 	rollupSources := flag.String("rollupSources", "", "CSV of sources to roll up, or 'all' (e.g. filepath,llm.gpt-4o)")
 	rollupNoPreserve := flag.Bool("rollupNoPreserve", false, "Replace existing tags/keywords instead of unioning with them")
+	llmFields := flag.String("llmFields", "title,description,tags,keywords", "CSV of fields for LLM generation (default: all four)")
+	llmSkipFresherThan := flag.Int("llmSkipFresherThan", 0, "Skip files where LLM date_last_generated is within N days (0 = always regenerate)")
+	llmRegenerateIfNewer := flag.Bool("llmRegenerateIfNewer", false, "Regenerate if the content date field is newer than date_last_generated")
+	applyLLMTitle := flag.String("applyLLMGeneratedTitle", "", "Write staged LLM title to 'title': <source[:action]> (e.g. llm.gpt-4o:if_empty)")
+	applyLLMDescription := flag.String("applyLLMGeneratedDescription", "", "Write staged LLM description to 'description': <source[:action]> (e.g. llm.gpt-4o:if_empty)")
 
 	///// Make Changes to Front Matter ///////
 	//Single Property CRUD
@@ -172,6 +186,7 @@ func main() {
 	///// Help/Examples /////
 	help := flag.Bool("help", false, "Display help information")
 	examples := flag.Bool("examples", false, "Show usage examples")
+	llmTest := flag.Bool("llmTest", false, "Test the OpenAI connection using the API key in ~/.fmc/config.json")
 
 	// help subcommand intercepted after flag registration so PrintDefaults works
 	if len(os.Args) > 1 && os.Args[1] == "help" {
@@ -193,6 +208,26 @@ func main() {
 	if *examples {
 		printExamples()
 		return
+	}
+
+	if *llmTest {
+		runLLMTest()
+		return
+	}
+
+	// Catch bare words that look like flags missing their leading dash.
+	// flag.Args() contains everything after the first non-flag argument, so a
+	// stray word like "llmTest" ends up here instead of silently being ignored.
+	if args := flag.Args(); len(args) > 0 {
+		for _, a := range args {
+			if flag.Lookup(a) != nil {
+				fmt.Fprintf(os.Stderr, "error: %q is not a valid subcommand — did you mean -%s?\n", a, a)
+			} else {
+				fmt.Fprintf(os.Stderr, "error: unknown flag or subcommand %q\n", a)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "Run 'fmc help' for usage.")
+		os.Exit(1)
 	}
 
 	checker.PathKeep = *keep
@@ -235,6 +270,11 @@ func main() {
 	checker.Rollup = *rollup
 	checker.RollupSources = *rollupSources
 	checker.RollupNoPreserve = *rollupNoPreserve
+	checker.LLMFields = *llmFields
+	checker.LLMSkipFresherThan = *llmSkipFresherThan
+	checker.LLMRegenerateIfNewer = *llmRegenerateIfNewer
+	checker.ApplyLLMTitle = *applyLLMTitle
+	checker.ApplyLLMDescription = *applyLLMDescription
 
 	if *files != "" {
 		checker.Files = strings.Split(*files, ",")
@@ -284,6 +324,14 @@ func (fmc *FrontMatterChecker) Run() error {
 
 	if fmc.Rollup != "" {
 		return fmc.runRollup(filesToProcess)
+	}
+
+	if fmc.ApplyLLMTitle != "" {
+		return fmc.applyLLMGenerated("title", "title_sources", "value", fmc.ApplyLLMTitle, filesToProcess)
+	}
+
+	if fmc.ApplyLLMDescription != "" {
+		return fmc.applyLLMGenerated("description", "description_sources", "value", fmc.ApplyLLMDescription, filesToProcess)
 	}
 
 	if len(fmc.SetValues) > 0 {
@@ -1256,11 +1304,8 @@ func applyPlans(plans []frontmatter.FileChangePlan) error {
 			if change.RenamedFrom != "" {
 				fmt.Printf("    %-20s %q → %q (renamed from %q)\n", change.Key+":", change.RenamedFrom, change.Key, change.RenamedFrom)
 			} else {
-				oldStr := fmt.Sprintf("%v", change.OldValue)
-				if change.OldValue == nil {
-					oldStr = "<missing>"
-				}
-				fmt.Printf("    %-20s %s → %v\n", change.Key+":", oldStr, change.NewValue)
+				oldStr := formatChangeValue(change.OldValue)
+				fmt.Printf("    %-20s %s → %s\n", change.Key+":", oldStr, formatChangeValue(change.NewValue))
 			}
 		}
 		for _, key := range plan.KeysToDelete {
@@ -2245,11 +2290,14 @@ func (fmc *FrontMatterChecker) createFrom(files []string) error {
 // runGenerateSources populates tag_sources and keyword_sources from the named
 // source. Currently only "filepath" is supported.
 func (fmc *FrontMatterChecker) runGenerateSources(files []string) error {
-	switch fmc.GenerateSources {
-	case "filepath":
+	switch {
+	case fmc.GenerateSources == "filepath":
 		return fmc.generateSourcesFilepath(files)
+	case strings.HasPrefix(fmc.GenerateSources, "llm."):
+		model := strings.TrimPrefix(fmc.GenerateSources, "llm.")
+		return fmc.generateSourcesLLM(model, files)
 	default:
-		return fmt.Errorf("unknown source %q: only 'filepath' is currently supported", fmc.GenerateSources)
+		return fmt.Errorf("unknown source %q — use 'filepath' or 'llm.<model>' (e.g. llm.gpt-4o)", fmc.GenerateSources)
 	}
 }
 
@@ -2274,6 +2322,223 @@ func (fmc *FrontMatterChecker) generateSourcesFilepath(files []string) error {
 			{Key: "keyword_sources.filepath.date_last_generated", NewValue: today},
 			{Key: "keyword_sources.filepath.keyword_list", NewValue: segsAny},
 		}
+		plans = append(plans, plan)
+	}
+
+	return applyPlans(plans)
+}
+
+// generateSourcesLLM sends each file's markdown content to the OpenAI API and
+// stages the results into <field>_sources.llm.<model>.
+func (fmc *FrontMatterChecker) generateSourcesLLM(model string, files []string) error {
+	cfg, err := LoadFMCConfig()
+	if err != nil {
+		return fmt.Errorf("loading ~/.fmc/config.json: %w", err)
+	}
+	if cfg.OpenAI.APIKey == "" {
+		return fmt.Errorf("openai.api_key is not set in ~/.fmc/config.json")
+	}
+	if cfg.OpenAI.Model != "" && model == "" {
+		model = cfg.OpenAI.Model
+	}
+	if model == "" {
+		return fmt.Errorf("no model specified — use 'llm.gpt-4o' or set openai.model in ~/.fmc/config.json")
+	}
+	if err := validateModel(model); err != nil {
+		return err
+	}
+
+	wantFields := csvFields(fmc.LLMFields)
+	if len(wantFields) == 0 {
+		wantFields = []string{"title", "description", "tags", "keywords"}
+	}
+
+	today := time.Now().Format("2006-01-02")
+	sourcePrefix := "llm." + model
+
+	var plans []frontmatter.FileChangePlan
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+
+		fm, _ := frontmatter.GetFrontMatterMap(string(content))
+
+		// Freshness check: skip if generated recently enough.
+		if fmc.LLMSkipFresherThan > 0 {
+			genDateStr, _ := nestedGetString(fm, "tag_sources.llm."+model+".date_last_generated")
+			if genDateStr != "" {
+				if genDate, err := time.Parse("2006-01-02", genDateStr); err == nil {
+					age := time.Since(genDate)
+					if age < time.Duration(fmc.LLMSkipFresherThan)*24*time.Hour {
+						if !fmc.shouldRegenerateIfNewer(fm, cfg, genDate) {
+							fmt.Printf("skipping %s (generated %s ago, within %d-day window)\n",
+								displayPath(file, fmc.PathKeep), age.Round(time.Hour), fmc.LLMSkipFresherThan)
+							continue
+						}
+					}
+				}
+			}
+		}
+
+		fmt.Printf("generating [%s] for %s ...\n", strings.Join(wantFields, ","), displayPath(file, fmc.PathKeep))
+
+		generated, err := GenerateFields(cfg.OpenAI.APIKey, model, wantFields, string(content))
+		if err != nil {
+			fmt.Printf("  error: %v\n", file)
+			fmt.Printf("  %v\n", err)
+			continue
+		}
+
+		plan := frontmatter.FileChangePlan{FilePath: file}
+		prefix := func(field, subKey string) string {
+			return field + "_sources." + sourcePrefix + "." + subKey
+		}
+
+		for _, field := range wantFields {
+			switch field {
+			case "title":
+				plan.Changes = append(plan.Changes,
+					frontmatter.PropChange{Key: prefix("title", "date_last_generated"), NewValue: today},
+					frontmatter.PropChange{Key: prefix("title", "value"), NewValue: generated.Title},
+				)
+			case "description":
+				plan.Changes = append(plan.Changes,
+					frontmatter.PropChange{Key: prefix("description", "date_last_generated"), NewValue: today},
+					frontmatter.PropChange{Key: prefix("description", "value"), NewValue: generated.Description},
+				)
+			case "tags":
+				plan.Changes = append(plan.Changes,
+					frontmatter.PropChange{Key: prefix("tag", "date_last_generated"), NewValue: today},
+					frontmatter.PropChange{Key: prefix("tag", "tag_list"), NewValue: stringSliceToAny(generated.Tags)},
+				)
+			case "keywords":
+				plan.Changes = append(plan.Changes,
+					frontmatter.PropChange{Key: prefix("keyword", "date_last_generated"), NewValue: today},
+					frontmatter.PropChange{Key: prefix("keyword", "keyword_list"), NewValue: stringSliceToAny(generated.Keywords)},
+				)
+			}
+		}
+
+		if plan.HasChanges() {
+			plans = append(plans, plan)
+		}
+	}
+
+	return applyPlans(plans)
+}
+
+// shouldRegenerateIfNewer returns true when -llmRegenerateIfNewer is set and
+// the configured content date field is newer than lastGenDate.
+func (fmc *FrontMatterChecker) shouldRegenerateIfNewer(fm map[string]any, cfg FMCConfig, lastGenDate time.Time) bool {
+	if !fmc.LLMRegenerateIfNewer || fm == nil {
+		return false
+	}
+	field := cfg.LLM.contentDateField()
+	format := cfg.LLM.contentDateFormat()
+	goLayout := userFormatToGoLayout(format)
+
+	raw, ok := nestedGetString(fm, field)
+	if !ok || raw == "" {
+		fmt.Printf("  note: %s not present — cannot compare content date\n", field)
+		return false
+	}
+	contentDate, err := time.Parse(goLayout, raw)
+	if err != nil {
+		fmt.Printf("  note: could not parse %s value %q as %s\n", field, raw, format)
+		return false
+	}
+	return contentDate.After(lastGenDate)
+}
+
+// nestedGetString is a convenience wrapper that returns a string value from a
+// dot-separated path in a front matter map.
+func nestedGetString(fm map[string]any, dotPath string) (string, bool) {
+	if fm == nil {
+		return "", false
+	}
+	val, ok := frontmatter.NestedGet(fm, frontmatter.KeyPath(dotPath))
+	if !ok {
+		return "", false
+	}
+	s, ok := val.(string)
+	return s, ok
+}
+
+// applyLLMGenerated writes a staged LLM single-value field (title or
+// description) to the top-level front matter key, respecting the action
+// specified in the flag value ("<source[:action]>").
+func (fmc *FrontMatterChecker) applyLLMGenerated(destKey, sourcesKey, valueSubKey, flagVal string, files []string) error {
+	parts := strings.SplitN(flagVal, ":", 2)
+	source := parts[0] // e.g. "llm.gpt-4o"
+	action := frontmatter.ActionAddIfMissing
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "always":
+			action = frontmatter.ActionOverwriteAlways
+		case "if_empty":
+			action = frontmatter.ActionOverwriteIfEmpty
+		case "add_if_missing":
+			// already default
+		default:
+			return fmt.Errorf("unknown action %q — use always, if_empty, or add_if_missing", parts[1])
+		}
+	}
+
+	// Validate the model name before touching any files.
+	if strings.HasPrefix(source, "llm.") {
+		model := strings.TrimPrefix(source, "llm.")
+		if err := validateModel(model); err != nil {
+			return fmt.Errorf("invalid source %q: %w", source, err)
+		}
+	}
+
+	var plans []frontmatter.FileChangePlan
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		fm, err := frontmatter.GetFrontMatterMap(string(content))
+		if err != nil || fm == nil {
+			continue
+		}
+
+		// Read staged value: <sourcesKey>.<source>.<valueSubKey>
+		sourcesMap, _ := fm[sourcesKey].(map[string]any)
+		stagedVal, ok := nestedGetString(sourcesMap, source+"."+valueSubKey)
+		if !ok || stagedVal == "" {
+			fmt.Printf("warning: %s — no staged %s from %q (run -generateSources %s first)\n",
+				displayPath(file, fmc.PathKeep), destKey, source, source)
+			continue
+		}
+
+		// Check action against current value.
+		current, _ := fm[destKey].(string)
+		switch action {
+		case frontmatter.ActionAddIfMissing:
+			if current != "" {
+				continue
+			}
+		case frontmatter.ActionOverwriteIfEmpty:
+			if strings.TrimSpace(current) != "" {
+				continue
+			}
+		case frontmatter.ActionOverwriteAlways:
+			// always write
+		}
+
+		plan := frontmatter.FileChangePlan{FilePath: file}
+		plan.Changes = append(plan.Changes, frontmatter.PropChange{
+			Key:      destKey,
+			OldValue: current,
+			NewValue: stagedVal,
+		})
 		plans = append(plans, plan)
 	}
 
@@ -2474,6 +2739,26 @@ func stringSlicesEqualUnordered(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// formatChangeValue formats a value for display in the planned-changes preview.
+// Slices are shown as comma-separated strings so items are easy to distinguish.
+func formatChangeValue(v any) string {
+	if v == nil {
+		return "<missing>"
+	}
+	switch val := v.(type) {
+	case []any:
+		parts := make([]string, len(val))
+		for i, item := range val {
+			parts[i] = fmt.Sprintf("%v", item)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case []string:
+		return "[" + strings.Join(val, ", ") + "]"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func stringSliceToAny(s []string) []any {

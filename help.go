@@ -92,6 +92,16 @@ func printHelp() {
 	printFlag(out, "rollupSources", "<source1,source2|all>")
 	printFlag(out, "rollupNoPreserve", "")
 
+	section(out, "Tags & Keywords — LLM Generation (requires ~/.fmc/config.json):")
+	printFlag(out, "generateSources", "<llm.gpt-4o>")
+	printFlag(out, "llmFields", "<title,description,tags,keywords>")
+	printFlag(out, "llmSkipFresherThan", "<N>")
+	printFlag(out, "llmRegenerateIfNewer", "")
+
+	section(out, "Apply LLM-Generated Values:")
+	printFlag(out, "applyLLMGeneratedTitle", "<llm.gpt-4o[:action]>")
+	printFlag(out, "applyLLMGeneratedDescription", "<llm.gpt-4o[:action]>")
+
 	section(out, "Display Options:")
 	printFlag(out, "keepNonVariadicPathSegments", "<N>")
 	printFlag(out, "keepNVPS", "<N>")
@@ -101,7 +111,8 @@ func printHelp() {
 	printFlag(out, "examples", "")
 
 	fmt.Fprintln(out, "\nRun 'fmc -examples' for usage examples.")
-	fmt.Fprintln(out, "Run 'fmc help <flag>' for detailed help on a specific flag.")
+	fmt.Fprintln(out, "Run 'fmc help <topic>' for detailed help on a specific flag or topic.")
+	fmt.Fprintln(out, "Run 'fmc help list' to see all available help topics.")
 	fmt.Fprintln(out, "Run 'fmc commonWorkflows' for common multi-step cleanup sequences.")
 }
 
@@ -451,6 +462,101 @@ Examples:
     fmc -t template.json -removeExtraProps -files ./docs/my-post.md
 
 `)
+	case "llm":
+		fmt.Print(`LLM Source Generation (OpenAI / ChatGPT)
+=========================================
+
+Config file: ~/.fmc/config.json
+  {
+    "openai": {
+      "api_key": "sk-...",
+      "model":   "gpt-4o"
+    },
+    "llm": {
+      "content_date_field":  "last_update.date",
+      "content_date_format": "YYYY-MM-DD"
+    }
+  }
+
+Run fmc -llmTest to test the OpenAI connection using the API key in ~/.fmc/config.json
+
+Supported models: gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-3.5-turbo
+
+All generated values are STAGED, not written directly to front matter.
+Use -applyLLMGeneratedTitle / -applyLLMGeneratedDescription to apply single-
+value fields, and -rollup to apply tags/keywords. See: fmc help generateSources
+
+-generateSources llm.<model>
+
+  Sends each file's markdown content to the OpenAI API and stages results into:
+    title_sources.llm.<model>.value
+    description_sources.llm.<model>.value
+    tag_sources.llm.<model>.tag_list
+    keyword_sources.llm.<model>.keyword_list
+  Each also gets a date_last_generated field set to today (YYYY-MM-DD).
+
+-llmFields <title,description,tags,keywords>
+
+  CSV of fields to generate. Defaults to all four. Omit fields you don't need
+  to reduce API cost and latency.
+
+-llmSkipFresherThan <N>
+
+  Skip a file if its date_last_generated for this source is within N days.
+  0 (default) means always regenerate.
+
+-llmRegenerateIfNewer
+
+  When used with -llmSkipFresherThan, overrides the skip if the content date
+  field (llm.content_date_field in config) is newer than date_last_generated.
+  Files missing the content date field are warned and skipped.
+
+-applyLLMGeneratedTitle <source[:action]>
+-applyLLMGeneratedDescription <source[:action]>
+
+  Write the staged value from title_sources or description_sources to the
+  top-level 'title' or 'description' key. Action controls when to write:
+    (none)         add_if_missing — only write if the key is absent (default)
+    if_empty       write if absent or empty string
+    always         always overwrite
+
+Examples:
+  Generate all four fields for every doc:
+    fmc -generateSources llm.gpt-4o -dir ./docs
+
+  Generate only tags and keywords:
+    fmc -generateSources llm.gpt-4o -llmFields tags,keywords -dir ./docs
+
+  Regenerate only files updated since last LLM run:
+    fmc -generateSources llm.gpt-4o -llmSkipFresherThan 7 -llmRegenerateIfNewer -dir ./docs
+
+  Apply staged title if the title field is currently empty:
+    fmc -applyLLMGeneratedTitle llm.gpt-4o:if_empty -dir ./docs
+
+  Roll up LLM tags into the tags field (preserving existing):
+    fmc -rollup tags -rollupSources llm.gpt-4o -dir ./docs
+
+`)
+	case "list":
+		fmt.Println("Available help topics:")
+		fmt.Println("  fmc help setValue")
+		fmt.Println("  fmc help addMissingProps")
+		fmt.Println("  fmc help removeExtraProps")
+		fmt.Println("  fmc help createFrom")
+		fmt.Println("  fmc help replaceKey")
+		fmt.Println("  fmc help createFrontMatter")
+		fmt.Println("  fmc help inspectProp")
+		fmt.Println("  fmc help listEmpty")
+		fmt.Println("  fmc help checkFormat")
+		fmt.Println("  fmc help analyzeSEO")
+		fmt.Println("  fmc help analyzeOrder")
+		fmt.Println("  fmc help generateSources")
+		fmt.Println("  fmc help llm")
+		fmt.Println()
+		fmt.Println("Run 'fmc commonWorkflows' for common multi-step cleanup sequences.")
+		fmt.Println("Run 'fmc policy help' for policy file format.")
+		fmt.Println("Run 'fmc policy list-functions' for built-in functions.")
+
 	case "generateSources", "rollup":
 		fmt.Print(`Tags & Keywords — Source Generation and Rollup
 ==============================================
@@ -515,35 +621,69 @@ Examples:
 `)
 	default:
 		fmt.Printf("no help topic %q\n\n", topic)
-		fmt.Println("Available help topics:")
-		fmt.Println("  fmc help setValue")
-		fmt.Println("  fmc help addMissingProps")
-		fmt.Println("  fmc help removeExtraProps")
-		fmt.Println("  fmc help createFrom")
-		fmt.Println("  fmc help replaceKey")
-		fmt.Println("  fmc help createFrontMatter")
-		fmt.Println("  fmc help inspectProp")
-		fmt.Println("  fmc help listEmpty")
-		fmt.Println("  fmc help checkFormat")
-		fmt.Println("  fmc help analyzeSEO")
-		fmt.Println("  fmc help analyzeOrder")
-		fmt.Println("  fmc help generateSources")
-		fmt.Println()
-		fmt.Println("For the full flag list run: fmc help")
+		fmt.Println("Run 'fmc help list' to see all available help topics.")
+		fmt.Println("Run 'fmc help' for the full flag list.")
 		os.Exit(1)
 	}
 }
 
-func printCommonWorkflows() {
+// workflowEntry is a registered workflow with a short description.
+type workflowEntry struct {
+	name        string
+	description string
+	run         func()
+}
+
+var workflows = []workflowEntry{
+	{
+		name:        "cleanEmpty",
+		description: "Find empty front matter properties and remove them",
+		run:         workflowCleanEmpty,
+	},
+	{
+		name:        "llmGenerate",
+		description: "Generate and apply LLM-suggested title, description, tags, and keywords",
+		run:         workflowLLMGenerate,
+	},
+}
+
+func printWorkflowIndex() {
 	fmt.Print(`Common Workflows
 ================
 
+Workflows are multi-step sequences for common front matter tasks.
+Each step is a separate fmc command — they are not composed automatically.
+Run a workflow by name to see the full step-by-step guide.
+
+Usage:
+  fmc commonWorkflows <name>
+
+Available workflows:
+`)
+	for _, w := range workflows {
+		fmt.Printf("  %-20s %s\n", w.name, w.description)
+	}
+	fmt.Println()
+}
+
+func runWorkflow(name string) {
+	for _, w := range workflows {
+		if w.name == name {
+			w.run()
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "error: unknown workflow %q\n\n", name)
+	fmt.Fprintln(os.Stderr, "Run 'fmc commonWorkflows' to see available workflows.")
+	os.Exit(1)
+}
+
+func workflowCleanEmpty() {
+	fmt.Print(`Workflow: cleanEmpty — Find empty properties, then remove them
+==============================================================
+
 These are multi-step sequences you can run during front matter cleanup.
 Each step is a separate fmc command — they are not composed automatically.
-
-──────────────────────────────────────────────────────────────────────
-Workflow: Find empty properties, then remove them
-──────────────────────────────────────────────────────────────────────
 
 Step 1 — See which properties are empty across your files:
 
@@ -563,6 +703,78 @@ Step 2b — Remove ALL empty keys across every file:
   Use the per-file breakdown first if you want to review before bulk-deleting:
 
   fmc -listEmptyDetails -sortBy name -dir ./docs
+
+`)
+}
+
+func workflowLLMGenerate() {
+	fmt.Print(`Workflow: llmGenerate — Generate and apply LLM-suggested front matter
+======================================================================
+
+How it works
+------------
+fmc uses OpenAI's Chat Completions API to read each file's markdown content
+and suggest values for title, description, tags, and keywords. Results are
+STAGED into a *_sources block in the front matter — nothing is written to
+the real fields until you explicitly apply them. This lets you review before
+committing to anything.
+
+Staged data lives under keys like:
+  title_sources.llm.gpt-4o.value
+  description_sources.llm.gpt-4o.value
+  tag_sources.llm.gpt-4o.tag_list
+  keyword_sources.llm.gpt-4o.keyword_list
+  tag_sources.llm.gpt-4o.date_last_generated   ← used for freshness checks
+
+Prerequisites
+-------------
+Create ~/.fmc/config.json with your OpenAI API key:
+
+  {
+    "openai": {
+      "api_key": "sk-...",
+      "model": "gpt-4o"
+    }
+  }
+
+Test that it works:
+  fmc -llmTest
+
+Step 1 — Stage LLM suggestions for all files:
+
+  fmc -generateSources llm.gpt-4o -dir ./docs
+
+  To generate only specific fields (cheaper/faster):
+    fmc -generateSources llm.gpt-4o -llmFields tags,keywords -dir ./docs
+
+  To skip files whose staged data is already fresh (e.g. generated within
+  the last 7 days), but still regenerate if the page content is newer:
+    fmc -generateSources llm.gpt-4o -llmSkipFresherThan 7 -llmRegenerateIfNewer -dir ./docs
+
+Step 2 — Review the staged values:
+
+  Open any file and inspect the *_sources block before applying anything.
+  fmc -listEmptyForKey title -dir ./docs   # check which files still lack a title
+
+Step 3 — Apply title and description:
+
+  Only write if the field is currently empty (safest default):
+    fmc -applyLLMGeneratedTitle "llm.gpt-4o:if_empty" -dir ./docs
+    fmc -applyLLMGeneratedDescription "llm.gpt-4o:if_empty" -dir ./docs
+
+  Always overwrite (useful when regenerating):
+    fmc -applyLLMGeneratedTitle "llm.gpt-4o:always" -dir ./docs
+
+Step 4 — Roll up tags and keywords:
+
+  Merge LLM suggestions into the top-level tags field, preserving existing:
+    fmc -rollup tags -rollupSources llm.gpt-4o -dir ./docs
+
+  Same for keywords:
+    fmc -rollup keywords -rollupSources llm.gpt-4o -dir ./docs
+
+  Replace instead of merging (use -rollupNoPreserve):
+    fmc -rollup tags,keywords -rollupSources llm.gpt-4o -rollupNoPreserve -dir ./docs
 
 `)
 }

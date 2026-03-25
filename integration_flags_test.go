@@ -764,3 +764,195 @@ func TestRollupMissingSourcesFlag(t *testing.T) {
 	dir := copyToTemp(t, "scalar-date.md")
 	runFmcExpectFail(t, "-rollup", "tags", "-dir", dir)
 }
+
+// ── LLM source generation ───────────────────────────────────────────────────
+
+// llmAPIKey returns the OpenAI API key from the environment, or skips the test
+// if it is not set. Real API calls are only made when OPENAI_API_KEY is present.
+func llmAPIKey(t *testing.T) string {
+	t.Helper()
+	key := os.Getenv("OPENAI_API_KEY")
+	if key == "" {
+		t.Skip("OPENAI_API_KEY not set — skipping live LLM test")
+	}
+	return key
+}
+
+// writeConfig writes a minimal ~/.fmc/config.json for use in tests, restoring
+// the original file (if any) via t.Cleanup.
+func writeTestConfig(t *testing.T, apiKey, model string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".fmc")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// Back up any existing config.
+	existing, readErr := os.ReadFile(cfgPath)
+	t.Cleanup(func() {
+		if readErr == nil {
+			_ = os.WriteFile(cfgPath, existing, 0600)
+		} else {
+			_ = os.Remove(cfgPath)
+		}
+	})
+
+	cfg := `{"openai":{"api_key":"` + apiKey + `","model":"` + model + `"}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGenerateSourcesLLMNoConfig(t *testing.T) {
+	// Temporarily hide the config file so we get a clean "no api key" error.
+	home, _ := os.UserHomeDir()
+	cfgPath := filepath.Join(home, ".fmc", "config.json")
+	existing, err := os.ReadFile(cfgPath)
+	if err == nil {
+		_ = os.Remove(cfgPath)
+		t.Cleanup(func() { _ = os.WriteFile(cfgPath, existing, 0600) })
+	}
+
+	dir := copyToTemp(t, "scalar-date.md")
+	runFmcExpectFail(t, "-generateSources", "llm.gpt-4o", "-dir", dir)
+}
+
+func TestGenerateSourcesLLMInvalidModel(t *testing.T) {
+	key := llmAPIKey(t)
+	writeTestConfig(t, key, "gpt-4o")
+	dir := copyToTemp(t, "scalar-date.md")
+	runFmcExpectFail(t, "-generateSources", "llm.not-a-real-model", "-dir", dir)
+}
+
+func TestGenerateSourcesLLMLive(t *testing.T) {
+	key := llmAPIKey(t)
+	writeTestConfig(t, key, "gpt-4o")
+
+	dir := t.TempDir()
+	content := "---\ntitle: \"\"\ndescription: \"\"\ntags: []\nkeywords: []\n---\n# Getting Started with Go\n\nThis tutorial introduces Go programming for beginners.\n"
+	filePath := filepath.Join(dir, "go-intro.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFmc(t, "-generateSources", "llm.gpt-4o", "-llmFields", "tags,keywords", "-files", filePath)
+
+	got := readFile(t, filePath)
+	assertContains(t, got, "tag_sources:")
+	assertContains(t, got, "gpt-4o:")
+	assertContains(t, got, "tag_list:")
+	assertContains(t, got, "keyword_sources:")
+	assertContains(t, got, "keyword_list:")
+	assertContains(t, got, "date_last_generated:")
+}
+
+func TestApplyLLMGeneratedTitle(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+title: ""
+title_sources:
+  llm:
+    gpt-4o:
+      date_last_generated: "2026-03-01"
+      value: "Getting Started with Go"
+---
+Body.
+`
+	filePath := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFmc(t, "-applyLLMGeneratedTitle", "llm.gpt-4o:if_empty", "-files", filePath)
+
+	got := readFile(t, filePath)
+	assertContains(t, got, `title: Getting Started with Go`)
+}
+
+func TestApplyLLMGeneratedTitlePreservesExisting(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+title: "My Existing Title"
+title_sources:
+  llm:
+    gpt-4o:
+      date_last_generated: "2026-03-01"
+      value: "LLM Suggested Title"
+---
+Body.
+`
+	filePath := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// add_if_missing (default) — should not overwrite existing title
+	runFmc(t, "-applyLLMGeneratedTitle", "llm.gpt-4o", "-files", filePath)
+
+	got := readFile(t, filePath)
+	// top-level title must be unchanged
+	assertContains(t, got, "My Existing Title")
+	// the staged value in title_sources is still there — that's correct
+	// what must NOT happen is the top-level title being replaced
+	if strings.Contains(got, "title: LLM Suggested Title") || strings.Contains(got, `title: "LLM Suggested Title"`) {
+		t.Errorf("top-level title was overwritten unexpectedly:\n%s", got)
+	}
+}
+
+func TestApplyLLMGeneratedDescription(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+description: ""
+description_sources:
+  llm:
+    gpt-4o:
+      date_last_generated: "2026-03-01"
+      value: "A beginner guide to Go."
+---
+Body.
+`
+	filePath := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFmc(t, "-applyLLMGeneratedDescription", "llm.gpt-4o:if_empty", "-files", filePath)
+
+	got := readFile(t, filePath)
+	assertContains(t, got, "A beginner guide to Go.")
+}
+
+func TestLLMSkipFresherThan(t *testing.T) {
+	// Even with a live key, a file generated today should be skipped.
+	key := llmAPIKey(t)
+	writeTestConfig(t, key, "gpt-4o")
+
+	dir := t.TempDir()
+	today := time.Now().Format("2006-01-02")
+	content := `---
+title: ""
+tag_sources:
+  llm:
+    gpt-4o:
+      date_last_generated: "` + today + `"
+      tag_list: [existing-tag]
+---
+Body.
+`
+	filePath := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := runFmc(t, "-generateSources", "llm.gpt-4o", "-llmSkipFresherThan", "7", "-files", filePath)
+	assertContains(t, output, "skipping")
+
+	// Content should be unchanged (tag_list still has existing-tag, no API call made).
+	got := readFile(t, filePath)
+	assertContains(t, got, "existing-tag")
+}
