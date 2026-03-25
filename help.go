@@ -46,23 +46,35 @@ func printHelp() {
 	printFlag(out, "placementAudit", "")
 	printFlag(out, "listExtraProps", "")
 	printFlag(out, "listMissingProps", "")
-	printFlag(out, "issues-only", "")
-	printFlag(out, "verbose", "")
+	printFlag(out, "listEmpty", "<propertyName>")
+	printFlag(out, "checkFormat", "<key:FORMAT>")
+	printFlag(out, "checkType", "<key:type>")
+	printFlag(out, "listValues", "<propertyName>")
+	printFlag(out, "listDateFormats", "<propertyName>")
+	printFlag(out, "listDateFormatsDetail", "<propertyName>")
 	printFlag(out, "analyze", "")
 	printFlag(out, "analyzeOrder", "")
+	printFlag(out, "analyzeSEO", "")
+	printFlag(out, "plugin", "<docs|blog>")
 	printFlag(out, "inspectProp", "<key>")
+	printFlag(out, "issues-only", "")
+	printFlag(out, "verbose", "")
 
 	section(out, "Make Changes — Single Property:")
 	printFlag(out, "setValue", "<key:source:value[:action]>")
 	printFlag(out, "replaceKey", "<OldKey:NewKey>")
 	printFlag(out, "createSlug", "<FromKey:ToKey[:action]>")
 	printFlag(out, "genID", "")
-	printFlag(out, "listEmpty", "<propertyName>")
+	printFlag(out, "genIDOverwriteInvalid", "")
+	printFlag(out, "tryCast", "<key:type>")
 	printFlag(out, "removeEmpty", "<propertyName>")
 
 	section(out, "Make Changes — Multi Property:")
 	printFlag(out, "createFrontMatter", "")
+	printFlag(out, "onManualReview", "")
 	printFlag(out, "fmDefault", "<key:value>")
+	printFlag(out, "keysToTop", "<key>")
+	printFlag(out, "keysToBottom", "<key>")
 	printFlag(out, "addMissingProps", "")
 	printFlag(out, "removeExtraProps", "")
 	printFlag(out, "allProps", "")
@@ -75,14 +87,37 @@ func printHelp() {
 
 	section(out, "Other:")
 	printFlag(out, "help", "")
+	printFlag(out, "examples", "")
 
-	fmt.Fprintln(out, `
-Examples:
+	fmt.Fprintln(out, "\nRun 'fmc -examples' for usage examples.")
+	fmt.Fprintln(out, "Run 'fmc help <flag>' for detailed help on a specific flag.")
+}
+
+func printExamples() {
+	fmt.Print(`Examples:
   Audit front matter placement:
     fmc -dir ./docs -placementAudit
 
+  Run all checks (placement, missing, extra, empty, order):
+    fmc -t template.json -analyze -dir ./docs
+
   Find extra/misspelled keys across a directory:
     fmc -t template.json -dir ./docs -listExtraProps
+
+  List files where a property is empty:
+    fmc -listEmpty description -dir ./docs
+
+  Check a date property conforms to a format:
+    fmc -checkFormat "last_update.date:YYYYMMDD" -dir ./docs
+
+  Check a property is the correct type:
+    fmc -checkType "disable:bool" -dir ./docs
+
+  Cast a property to the correct type:
+    fmc -tryCast "disable:bool" -dir ./docs
+
+  Analyze SEO front matter (Docusaurus docs plugin):
+    fmc -analyzeSEO -plugin docs -dir ./docs
 
   Add missing template keys (empty value):
     fmc -t template.json -addMissingProps -dir ./docs
@@ -90,8 +125,20 @@ Examples:
   Remove keys not in the template:
     fmc -t template.json -removeExtraProps -dir ./docs
 
-  Set a value (static, computed, or llm):
+  Set a value (static, computed, or transform):
     fmc -setValue "last_update:computed:today:if_empty" -dir ./docs
+
+  Generate UUIDs for missing id fields:
+    fmc -genID -dir ./docs
+
+  Add front matter to files that are missing it:
+    fmc -t template.json -createFrontMatter -dir ./docs
+
+  Add front matter to manual-review files specifically:
+    fmc -t template.json -createFrontMatter -onManualReview -dir ./docs
+
+  Move id and title to the top, tags to the bottom:
+    fmc -keysToTop id -keysToTop title -keysToBottom tags -dir ./docs
 
   Policy subcommand help:
     fmc policy help
@@ -102,7 +149,14 @@ Examples:
     fmc help addMissingProps
     fmc help removeExtraProps
     fmc help createSlug
-    fmc help replaceKey`)
+    fmc help replaceKey
+    fmc help createFrontMatter
+    fmc help inspectProp
+    fmc help listEmpty
+    fmc help checkFormat
+    fmc help analyzeSEO
+    fmc help analyzeOrder
+`)
 }
 
 func runHelpTopic(topic string) {
@@ -153,7 +207,7 @@ Examples:
   produced. Action controls when the write happens.
 
 Sources:
-  static     Use the literal string as the value
+  static     Use the literal value (optionally suffixed with a type: bool, string, int, float)
   computed   Run a built-in deterministic function (today, uuid, path_segments)
   transform  Derive a value from another property (supports dotted paths); requires fn:from_key
   llm        Run an AI function (describe, tags, title) — requires API key
@@ -170,6 +224,9 @@ Actions:
 Examples:
   Add a static draft status if missing:
     fmc -setValue "status:static:draft" -dir ./docs
+
+  Set a boolean value (write false not "false"):
+    fmc -setValue "disable:static:false:bool:always" -dir ./docs
 
   Always stamp last_update with today's date:
     fmc -setValue "last_update:computed:today:always" -dir ./docs
@@ -244,6 +301,98 @@ Examples:
     fmc -t template.json -addMissingProps -files ./docs/my-post.md
 
 `)
+	case "analyzeOrder":
+		fmt.Print(`-analyzeOrder  (requires -t)
+
+  Checks whether each file's front matter keys appear in the same order as the
+  template. Files that are missing one or more template properties are excluded
+  from the check (they cannot be fairly compared). The summary shows how many
+  files were excluded.
+
+  Respects -issues-only (suppress files that are in order) and
+  -keepNonVariadicPathSegments / -keepNVPS for path display.
+
+Examples:
+  Check key order across a directory:
+    fmc -t template.json -analyzeOrder -dir ./docs
+
+  Show only out-of-order files:
+    fmc -t template.json -analyzeOrder -issues-only -dir ./docs
+
+`)
+	case "listEmpty":
+		fmt.Print(`-listEmpty <propertyName>  (repeatable)
+
+  Lists every file where the named property exists in the front matter but its
+  value is empty (nil, "", or whitespace-only). Files where the property is
+  absent are not reported — use -listMissingProps for that.
+
+  Pass the flag multiple times to check several properties in one pass.
+
+Examples:
+  Find files with an empty description:
+    fmc -listEmpty description -dir ./docs
+
+  Check multiple properties at once:
+    fmc -listEmpty description -listEmpty tags -dir ./docs
+
+`)
+	case "checkFormat":
+		fmt.Print(`-checkFormat key:FORMAT  (repeatable)
+
+  Lists files where the named property is present but its string value does not
+  parse as the given date format. Properties that are absent are not reported.
+  Dotted paths are supported (e.g. last_update.date).
+
+Named formats:
+  uuid   RFC 4122 UUID (e.g. a3f8b2c1-1234-4abc-8def-000000000000)
+
+Date format tokens:
+  YYYY   four-digit year
+  MM     two-digit month (01–12)
+  DD     two-digit day (01–31)
+  HH     two-digit hour (00–23)
+  mm     two-digit minute (00–59)
+  ss     two-digit second (00–59)
+
+Examples:
+  Check id is a valid UUID:
+    fmc -checkFormat "id:uuid" -dir ./docs
+
+  Check last_update.date is YYYYMMDD:
+    fmc -checkFormat "last_update.date:YYYYMMDD" -dir ./docs
+
+  Check multiple properties:
+    fmc -checkFormat "id:uuid" -checkFormat "last_update.date:YYYYMMDD" -dir ./docs
+
+`)
+	case "analyzeSEO":
+		fmt.Print(`-analyzeSEO  (requires -plugin)
+
+  Reports how many files are missing or have empty values for SEO-relevant
+  front matter properties. Files where draft or unlisted is true are excluded
+  from the analysis.
+
+  The header shows:
+    Total Files          — all files passed to fmc
+    Unlisted or Draft    — files skipped due to draft/unlisted
+    SEO Analyzed Files   — files actually checked
+
+-plugin <docs|blog>
+
+  Selects the Docusaurus plugin whose SEO properties are checked.
+
+  docs  title, description, keywords, image, slug
+  blog  title, title_meta, description, keywords, image, slug
+
+Examples:
+  Analyze SEO coverage for the docs plugin:
+    fmc -analyzeSEO -plugin docs -dir ./docs
+
+  Analyze a blog directory:
+    fmc -analyzeSEO -plugin blog -dir ./blog
+
+`)
 	case "removeExtraProps":
 		fmt.Print(`-removeExtraProps
 
@@ -260,7 +409,7 @@ Examples:
 `)
 	default:
 		fmt.Printf("no help topic %q\n\n", topic)
-		fmt.Println("Only a subset of flags currently have dedicated help. Available topics:")
+		fmt.Println("Available help topics:")
 		fmt.Println("  fmc help setValue")
 		fmt.Println("  fmc help addMissingProps")
 		fmt.Println("  fmc help removeExtraProps")
@@ -268,6 +417,10 @@ Examples:
 		fmt.Println("  fmc help replaceKey")
 		fmt.Println("  fmc help createFrontMatter")
 		fmt.Println("  fmc help inspectProp")
+		fmt.Println("  fmc help listEmpty")
+		fmt.Println("  fmc help checkFormat")
+		fmt.Println("  fmc help analyzeSEO")
+		fmt.Println("  fmc help analyzeOrder")
 		fmt.Println()
 		fmt.Println("For the full flag list run: fmc help")
 		os.Exit(1)

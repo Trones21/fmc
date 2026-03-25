@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Trones21/fmc/frontmatter"
 )
@@ -34,7 +37,8 @@ type FrontMatterChecker struct {
 	FixOptions         map[string]bool
 	AnalyzeOnly        bool
 	PlacementAuditOnly bool
-	GenID              bool
+	GenID                    bool
+	GenIDOverwriteInvalid    bool
 	Config             Config
 
 	IssuesOnly       bool
@@ -55,7 +59,15 @@ type FrontMatterChecker struct {
 	FmDefaults           repeatableFlag // each entry: "key:value"
 	AnalyzeOrder         bool
 	AnalyzeSEO           bool
-	Plugin               string // "docs" or "blog"
+	Plugin               string         // "docs" or "blog"
+	CheckFormats         repeatableFlag // each entry: "key:FORMAT"
+	CheckTypes           repeatableFlag // each entry: "key:type"
+	TryCast              repeatableFlag // each entry: "key:type"
+	KeysToTop            repeatableFlag // keys to move to the front
+	KeysToBottom         repeatableFlag // keys to move to the end
+	ListValues           repeatableFlag // each entry: property name
+	ListDateFormats       repeatableFlag // each entry: property name
+	ListDateFormatsDetail repeatableFlag // each entry: property name
 }
 
 func main() {
@@ -93,10 +105,27 @@ func main() {
 	analyzeOrder := flag.Bool("analyzeOrder", false, "Check whether each file's front matter keys match the template order (requires -t)")
 	analyzeSEO := flag.Bool("analyzeSEO", false, "Analyze SEO-relevant front matter properties (requires -plugin)")
 	plugin := flag.String("plugin", "", "Docusaurus plugin to target for SEO analysis: docs or blog")
+	var checkFormats repeatableFlag
+	flag.Var(&checkFormats, "checkFormat", "Check that a property matches a date format, e.g. last_update.date:YYYY-MM-DD (repeatable)")
+	var checkTypes repeatableFlag
+	flag.Var(&checkTypes, "checkType", "List files where a property exists but is the wrong type, e.g. disable:bool (repeatable)")
+	var listValues repeatableFlag
+	flag.Var(&listValues, "listValues", "List all unique values and their counts for a property (repeatable)")
+	var listDateFormats repeatableFlag
+	flag.Var(&listDateFormats, "listDateFormats", "List which date formats are in use for a property, with counts (repeatable)")
+	var listDateFormatsDetail repeatableFlag
+	flag.Var(&listDateFormatsDetail, "listDateFormatsDetail", "Per-file table: file | format | length | value (greppable; repeatable)")
+	var tryCast repeatableFlag
+	flag.Var(&tryCast, "tryCast", "Cast a property's value to the target type, e.g. disable:bool (repeatable)")
+	var keysToTop repeatableFlag
+	flag.Var(&keysToTop, "keysToTop", "Move this key to the front of the front matter (repeatable, order matters)")
+	var keysToBottom repeatableFlag
+	flag.Var(&keysToBottom, "keysToBottom", "Move this key to the end of the front matter (repeatable, order matters)")
 
 	///// Make Changes to Front Matter ///////
 	//Single Property CRUD
-	genID := flag.Bool("genID", false, "Generate IDs for files where the ID property is missing or empty")
+	genID := flag.Bool("genID", false, "Generate a UUID for the id property when it is missing or empty")
+	genIDOverwriteInvalid := flag.Bool("genIDOverwriteInvalid", false, "Also overwrite id values that are not valid UUIDs (use with -genID)")
 	flag.Var(&checker.ReplaceKeys, "replaceKey", "Rename a key, keeping its value (repeatable; see: fmc help replaceKey)")
 	flag.Var(&checker.CreateSlugs, "createSlug", "Create a URL slug from a property (repeatable; see: fmc help createSlug)")
 	flag.Var(&checker.SetValues, "setValue", "Set a property via static, computed, or llm source (repeatable; see: fmc help setValue)")
@@ -122,6 +151,7 @@ func main() {
 
 	///// Help/Examples /////
 	help := flag.Bool("help", false, "Display help information")
+	examples := flag.Bool("examples", false, "Show usage examples")
 
 	// help subcommand intercepted after flag registration so PrintDefaults works
 	if len(os.Args) > 1 && os.Args[1] == "help" {
@@ -140,6 +170,11 @@ func main() {
 		return
 	}
 
+	if *examples {
+		printExamples()
+		return
+	}
+
 	checker.PathKeep = *keep
 
 	// Audit/Analysis Modes
@@ -155,11 +190,20 @@ func main() {
 	checker.FixOptions["allProps"] = *fixAllProps
 	checker.FixOptions["fixOrder"] = *fixOrder
 	checker.GenID = *genID
+	checker.GenIDOverwriteInvalid = *genIDOverwriteInvalid
 	checker.CreateFrontMatter = *createFrontMatter
 	checker.OnManualReview = *onManualReview
 	checker.AnalyzeOrder = *analyzeOrder
 	checker.AnalyzeSEO = *analyzeSEO
 	checker.Plugin = *plugin
+	checker.CheckFormats = checkFormats
+	checker.CheckTypes = checkTypes
+	checker.ListValues = listValues
+	checker.ListDateFormats = listDateFormats
+	checker.ListDateFormatsDetail = listDateFormatsDetail
+	checker.TryCast = tryCast
+	checker.KeysToTop = keysToTop
+	checker.KeysToBottom = keysToBottom
 	checker.ListExtraProps = *listExtraProps
 	checker.ListMissingProps = *listMissingProps
 	checker.AddMissingProps = *addMissingProps
@@ -195,6 +239,10 @@ func (fmc *FrontMatterChecker) Run() error {
 		return fmc.inspectProps(filesToProcess)
 	}
 
+	if fmc.GenID {
+		return fmc.runGenID(filesToProcess)
+	}
+
 	if len(fmc.ReplaceKeys) > 0 {
 		return fmc.replaceKeys(filesToProcess)
 	}
@@ -220,6 +268,34 @@ func (fmc *FrontMatterChecker) Run() error {
 			return fmt.Errorf("-analyzeSEO requires -plugin (docs or blog)")
 		}
 		return fmc.analyzeSEO(filesToProcess)
+	}
+
+	if len(fmc.CheckFormats) > 0 {
+		return fmc.runCheckFormats(filesToProcess)
+	}
+
+	if len(fmc.CheckTypes) > 0 {
+		return fmc.runCheckTypes(filesToProcess)
+	}
+
+	if len(fmc.ListValues) > 0 {
+		return fmc.runListValues(filesToProcess)
+	}
+
+	if len(fmc.ListDateFormats) > 0 {
+		return fmc.runListDateFormats(filesToProcess)
+	}
+
+	if len(fmc.ListDateFormatsDetail) > 0 {
+		return fmc.runListDateFormatsDetail(filesToProcess)
+	}
+
+	if len(fmc.TryCast) > 0 {
+		return fmc.runTryCast(filesToProcess)
+	}
+
+	if len(fmc.KeysToTop) > 0 || len(fmc.KeysToBottom) > 0 {
+		return fmc.runReorder(filesToProcess)
 	}
 
 	template, err := fmc.loadTemplate()
@@ -438,6 +514,534 @@ func (fmc *FrontMatterChecker) analyzeSEO(files []string) error {
 	for _, k := range keys {
 		c := tally[k]
 		fmt.Printf("| %s | %d | %d |\n", k, c.missing, c.empty)
+	}
+	return nil
+}
+
+// parseStaticValue coerces a CLI string to bool or int when unambiguous,
+// falling back to the raw string otherwise.
+func parseStaticValue(s string) any {
+	switch s {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	if i, err := strconv.Atoi(s); err == nil {
+		return i
+	}
+	return s
+}
+
+// userFormatToGoLayout converts a user-friendly date format string to a Go
+// time layout. Supported tokens: YYYY MM DD HH mm ss
+func userFormatToGoLayout(format string) string {
+	r := format
+	r = strings.ReplaceAll(r, "YYYY", "2006")
+	r = strings.ReplaceAll(r, "MM", "01")
+	r = strings.ReplaceAll(r, "DD", "02")
+	r = strings.ReplaceAll(r, "HH", "15")
+	r = strings.ReplaceAll(r, "mm", "04")
+	r = strings.ReplaceAll(r, "ss", "05")
+	return r
+}
+
+var reUUID = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func validateFormat(format, layout, s string) bool {
+	if format == "uuid" {
+		return reUUID.MatchString(s)
+	}
+	_, err := time.Parse(layout, s)
+	return err == nil
+}
+
+func yamlTypeName(v any) string {
+	switch v.(type) {
+	case bool:
+		return "bool"
+	case int:
+		return "int"
+	case float64:
+		return "float"
+	case string:
+		return "string"
+	case []any:
+		return "list"
+	case map[string]any:
+		return "map"
+	case nil:
+		return "null"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
+func matchesType(v any, typeName string) bool {
+	switch typeName {
+	case "bool":
+		_, ok := v.(bool)
+		return ok
+	case "string":
+		_, ok := v.(string)
+		return ok
+	case "int":
+		_, ok := v.(int)
+		return ok
+	case "float":
+		_, ok := v.(float64)
+		return ok
+	case "list", "array":
+		_, ok := v.([]any)
+		return ok
+	case "map", "object":
+		_, ok := v.(map[string]any)
+		return ok
+	}
+	return false
+}
+
+func castValue(val any, targetType string) (any, error) {
+	if matchesType(val, targetType) {
+		return val, nil // already correct
+	}
+	s, ok := val.(string)
+	if !ok {
+		return nil, fmt.Errorf("cannot cast %s to %s (only string source is supported)", yamlTypeName(val), targetType)
+	}
+	switch targetType {
+	case "bool":
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+		return nil, fmt.Errorf("cannot cast string %q to bool (expected \"true\" or \"false\")", s)
+	case "int":
+		i, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return nil, fmt.Errorf("cannot cast string %q to int", s)
+		}
+		return i, nil
+	case "float":
+		f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil {
+			return nil, fmt.Errorf("cannot cast string %q to float", s)
+		}
+		return f, nil
+	case "string":
+		return fmt.Sprintf("%v", val), nil
+	}
+	return nil, fmt.Errorf("unsupported target type %q", targetType)
+}
+
+func (fmc *FrontMatterChecker) runTryCast(files []string) error {
+	type castSpec struct {
+		key      string
+		typeName string
+	}
+	type fileCast struct {
+		file    string
+		key     string
+		oldVal  any
+		newVal  any
+		oldType string
+	}
+
+	specs := make([]castSpec, 0, len(fmc.TryCast))
+	for _, entry := range fmc.TryCast {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid -tryCast %q: expected key:type (e.g. disable:bool)", entry)
+		}
+		specs = append(specs, castSpec{key: parts[0], typeName: parts[1]})
+	}
+
+	var pending []fileCast
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		fm, err := frontmatter.GetFrontMatterMap(string(content))
+		if err != nil || len(fm) == 0 {
+			continue
+		}
+		for _, spec := range specs {
+			val, ok := frontmatter.NestedGet(fm, frontmatter.KeyPath(spec.key))
+			if !ok {
+				continue // absent — skip
+			}
+			if matchesType(val, spec.typeName) {
+				continue // already correct type
+			}
+			newVal, err := castValue(val, spec.typeName)
+			if err != nil {
+				fmt.Printf("  warning: %s — %s: %v\n", displayPath(file, fmc.PathKeep), spec.key, err)
+				continue
+			}
+			pending = append(pending, fileCast{
+				file:    file,
+				key:     spec.key,
+				oldVal:  val,
+				newVal:  newVal,
+				oldType: yamlTypeName(val),
+			})
+		}
+	}
+
+	if len(pending) == 0 {
+		fmt.Println("No values need casting.")
+		return nil
+	}
+
+	fmt.Printf("Will cast %d value(s):\n\n", len(pending))
+	for _, c := range pending {
+		fmt.Printf("  %s  %s: %v (%s) → %v\n",
+			displayPath(c.file, fmc.PathKeep), c.key, c.oldVal, c.oldType, c.newVal)
+	}
+
+	fmt.Print("\nApply these changes? [Y/n]: ")
+	var response string
+	fmt.Scanln(&response)
+	if response != "" && strings.ToLower(response) != "y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	// Group by file to apply all casts in a single write per file
+	byFile := make(map[string][]fileCast)
+	for _, c := range pending {
+		byFile[c.file] = append(byFile[c.file], c)
+	}
+	for file, casts := range byFile {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("error: %s: %v\n", file, err)
+			continue
+		}
+		policies := make([]frontmatter.PropertyPolicy, 0, len(casts))
+		template := make(map[string]any, len(casts))
+		for _, c := range casts {
+			template[c.key] = ""
+			policies = append(policies, frontmatter.PropertyPolicy{
+				Key:         c.key,
+				Action:      frontmatter.ActionOverwriteAlways,
+				Source:      frontmatter.SourceStatic,
+				StaticValue: c.newVal,
+			})
+		}
+		plan, err := frontmatter.PlanChanges(file, string(content), template, policies)
+		if err != nil {
+			fmt.Printf("error: %s: %v\n", file, err)
+			continue
+		}
+		if err := frontmatter.ApplyChangePlan(plan); err != nil {
+			fmt.Printf("error: %s: %v\n", file, err)
+		} else {
+			fmt.Printf("  wrote %s\n", displayPath(file, fmc.PathKeep))
+		}
+	}
+	return nil
+}
+
+var knownDateFormats = []struct{ name, layout string }{
+	{"YYYYMMDD", "20060102"},
+	{"YYYY-MM-DD", "2006-01-02"},
+	{"YYYY/MM/DD", "2006/01/02"},
+	{"DD-MM-YYYY", "02-01-2006"},
+	{"DD/MM/YYYY", "02/01/2006"},
+	{"MM/DD/YYYY", "01/02/2006"},
+	{"RFC3339", time.RFC3339},
+}
+
+func detectDateFormat(s string) string {
+	for _, f := range knownDateFormats {
+		if _, err := time.Parse(f.layout, s); err == nil {
+			return f.name
+		}
+	}
+	return ""
+}
+
+func (fmc *FrontMatterChecker) runListDateFormats(files []string) error {
+	for _, key := range fmc.ListDateFormats {
+		counts := make(map[string]int)
+		empty := 0
+		unparseableByLen := make(map[int]int)
+
+		for _, file := range files {
+			content, err := os.ReadFile(file)
+			if err != nil {
+				fmt.Printf("warning: could not read %s: %v\n", file, err)
+				continue
+			}
+			fm, err := frontmatter.GetFrontMatterMap(string(content))
+			if err != nil || len(fm) == 0 {
+				continue
+			}
+			val, ok := frontmatter.NestedGet(fm, frontmatter.KeyPath(key))
+			if !ok {
+				continue
+			}
+			s, isStr := val.(string)
+			if !isStr {
+				s = fmt.Sprintf("%v", val)
+			}
+			if strings.TrimSpace(s) == "" {
+				empty++
+				continue
+			}
+			if format := detectDateFormat(s); format != "" {
+				counts[format]++
+			} else {
+				unparseableByLen[len(s)]++
+			}
+		}
+
+		unparseable := 0
+		for _, c := range unparseableByLen {
+			unparseable += c
+		}
+
+		type entry struct {
+			name  string
+			count int
+		}
+		entries := make([]entry, 0, len(counts))
+		for name, c := range counts {
+			entries = append(entries, entry{name, c})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].count != entries[j].count {
+				return entries[i].count > entries[j].count
+			}
+			return entries[i].name < entries[j].name
+		})
+
+		fmt.Printf("Date formats for %q:\n", key)
+		for _, e := range entries {
+			fmt.Printf("  %-20s %d\n", e.name, e.count)
+		}
+		if empty > 0 {
+			fmt.Printf("  %-20s %d\n", "(empty)", empty)
+		}
+		if unparseable > 0 {
+			fmt.Printf("  %-20s %d\n", "(unrecognized)", unparseable)
+
+			// secondary breakdown by value length
+			type lenEntry struct{ length, count int }
+			lenEntries := make([]lenEntry, 0, len(unparseableByLen))
+			for l, c := range unparseableByLen {
+				lenEntries = append(lenEntries, lenEntry{l, c})
+			}
+			sort.Slice(lenEntries, func(i, j int) bool {
+				return lenEntries[i].length < lenEntries[j].length
+			})
+			fmt.Println("\n  Unrecognized values by length:")
+			for _, e := range lenEntries {
+				fmt.Printf("    %d chars%s%d\n", e.length, strings.Repeat(" ", max(1, 12-len(fmt.Sprintf("%d chars", e.length)))), e.count)
+			}
+		}
+		fmt.Printf("  Tip: fmc -listDateFormatsDetail %q -dir <path>\n", key)
+		fmt.Println()
+	}
+	return nil
+}
+
+func (fmc *FrontMatterChecker) runListDateFormatsDetail(files []string) error {
+	for _, key := range fmc.ListDateFormatsDetail {
+		fmt.Printf("Date format detail for %q:\n", key)
+		fmt.Printf("  %-42s  %-15s  %-6s  %s\n", "File", "Format", "Length", "Value")
+		fmt.Printf("  %s\n", strings.Repeat("-", 85))
+		for _, file := range files {
+			content, err := os.ReadFile(file)
+			if err != nil {
+				fmt.Printf("  warning: could not read %s: %v\n", file, err)
+				continue
+			}
+			fm, err := frontmatter.GetFrontMatterMap(string(content))
+			if err != nil || len(fm) == 0 {
+				continue
+			}
+			val, ok := frontmatter.NestedGet(fm, frontmatter.KeyPath(key))
+			if !ok {
+				continue
+			}
+			s, isStr := val.(string)
+			if !isStr {
+				s = fmt.Sprintf("%v", val)
+			}
+			format := "(empty)"
+			if strings.TrimSpace(s) != "" {
+				if f := detectDateFormat(s); f != "" {
+					format = f
+				} else {
+					format = "(unrecognized)"
+				}
+			}
+			fmt.Printf("  %-42s  %-15s  %-6d  %s\n", displayPath(file, fmc.PathKeep), format, len(s), s)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func (fmc *FrontMatterChecker) runListValues(files []string) error {
+	for _, key := range fmc.ListValues {
+		counts := make(map[string]int)
+		missing := 0
+
+		for _, file := range files {
+			content, err := os.ReadFile(file)
+			if err != nil {
+				fmt.Printf("warning: could not read %s: %v\n", file, err)
+				continue
+			}
+			fm, err := frontmatter.GetFrontMatterMap(string(content))
+			if err != nil || len(fm) == 0 {
+				missing++
+				continue
+			}
+			val, ok := frontmatter.NestedGet(fm, frontmatter.KeyPath(key))
+			if !ok {
+				missing++
+				continue
+			}
+			counts[fmt.Sprintf("%v", val)]++
+		}
+
+		// sort by count descending, then value ascending for ties
+		type entry struct {
+			val   string
+			count int
+		}
+		entries := make([]entry, 0, len(counts))
+		for v, c := range counts {
+			entries = append(entries, entry{v, c})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].count != entries[j].count {
+				return entries[i].count > entries[j].count
+			}
+			return entries[i].val < entries[j].val
+		})
+
+		fmt.Printf("Values for %q:\n", key)
+		for _, e := range entries {
+			fmt.Printf("  %-40s %d\n", e.val, e.count)
+		}
+		if missing > 0 {
+			fmt.Printf("  %-40s %d\n", "(missing)", missing)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func (fmc *FrontMatterChecker) runCheckTypes(files []string) error {
+	type check struct {
+		key      string
+		typeName string
+	}
+
+	checks := make([]check, 0, len(fmc.CheckTypes))
+	for _, entry := range fmc.CheckTypes {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid -checkType %q: expected key:type (e.g. disable:bool)", entry)
+		}
+		supported := map[string]bool{"bool": true, "string": true, "int": true, "float": true, "list": true, "array": true, "map": true, "object": true}
+		if !supported[parts[1]] {
+			return fmt.Errorf("invalid -checkType %q: unknown type %q (supported: bool, string, int, float, list, map)", entry, parts[1])
+		}
+		checks = append(checks, check{key: parts[0], typeName: parts[1]})
+	}
+
+	for _, chk := range checks {
+		fmt.Printf("Checking %s is type %s:\n", chk.key, chk.typeName)
+		found := false
+		for _, file := range files {
+			content, err := os.ReadFile(file)
+			if err != nil {
+				fmt.Printf("  warning: could not read %s: %v\n", file, err)
+				continue
+			}
+			fm, err := frontmatter.GetFrontMatterMap(string(content))
+			if err != nil || len(fm) == 0 {
+				continue
+			}
+			val, ok := frontmatter.NestedGet(fm, frontmatter.KeyPath(chk.key))
+			if !ok {
+				continue // absent — not a type violation
+			}
+			if !matchesType(val, chk.typeName) {
+				fmt.Printf("  %s  (actual type: %s, value: %v)\n", displayPath(file, fmc.PathKeep), yamlTypeName(val), val)
+				found = true
+			}
+		}
+		if !found {
+			fmt.Println("  all files conform")
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func (fmc *FrontMatterChecker) runCheckFormats(files []string) error {
+	type check struct {
+		key    string
+		format string
+		layout string
+	}
+
+	checks := make([]check, 0, len(fmc.CheckFormats))
+	for _, entry := range fmc.CheckFormats {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid -checkFormat %q: expected key:FORMAT (e.g. last_update.date:YYYYMMDD or id:uuid)", entry)
+		}
+		checks = append(checks, check{
+			key:    parts[0],
+			format: parts[1],
+			layout: userFormatToGoLayout(parts[1]),
+		})
+	}
+
+	for _, chk := range checks {
+		fmt.Printf("Checking %s against format %s:\n", chk.key, chk.format)
+		found := false
+		for _, file := range files {
+			content, err := os.ReadFile(file)
+			if err != nil {
+				fmt.Printf("  warning: could not read %s: %v\n", file, err)
+				continue
+			}
+			fm, err := frontmatter.GetFrontMatterMap(string(content))
+			if err != nil || len(fm) == 0 {
+				continue
+			}
+			val, ok := frontmatter.NestedGet(fm, frontmatter.KeyPath(chk.key))
+			if !ok {
+				continue // property absent — not a format violation
+			}
+			s, ok := val.(string)
+			if !ok {
+				fmt.Printf("  %s  (not a string: %T)\n", displayPath(file, fmc.PathKeep), val)
+				found = true
+				continue
+			}
+			if !validateFormat(chk.format, chk.layout, s) {
+				fmt.Printf("  %s  (value: %q)\n", displayPath(file, fmc.PathKeep), s)
+				found = true
+			}
+		}
+		if !found {
+			fmt.Println("  all files conform")
+		}
+		fmt.Println()
 	}
 	return nil
 }
@@ -678,6 +1282,16 @@ func (fmc *FrontMatterChecker) setValues(files []string) error {
 			value = strings.TrimSuffix(rest, ":if_empty")
 		}
 
+		// optional type specifier on static values: key:static:val:bool[:action]
+		var staticTypeName string
+		for _, t := range []string{"bool", "string", "int", "float"} {
+			if strings.HasSuffix(value, ":"+t) {
+				staticTypeName = t
+				value = strings.TrimSuffix(value, ":"+t)
+				break
+			}
+		}
+
 		policy := frontmatter.PropertyPolicy{
 			Key:    key,
 			Action: action,
@@ -685,7 +1299,15 @@ func (fmc *FrontMatterChecker) setValues(files []string) error {
 		}
 		switch frontmatter.ValueSource(source) {
 		case frontmatter.SourceStatic:
-			policy.StaticValue = value
+			if staticTypeName != "" {
+				casted, err := castValue(value, staticTypeName)
+				if err != nil {
+					return fmt.Errorf("-setValue %q: %v", entry, err)
+				}
+				policy.StaticValue = casted
+			} else {
+				policy.StaticValue = parseStaticValue(value)
+			}
 		case frontmatter.SourceComputed, frontmatter.SourceLLM:
 			policy.Fn = value
 		case frontmatter.SourceTransform:
@@ -1153,6 +1775,158 @@ func (fmc *FrontMatterChecker) listMissingProps(files []string, template map[str
 		fmt.Printf("| %s | %d |\n", entry.Key, entry.Count)
 	}
 
+	return nil
+}
+
+func (fmc *FrontMatterChecker) runReorder(files []string) error {
+	firstKeys := []string(fmc.KeysToTop)
+	lastKeys := []string(fmc.KeysToBottom)
+
+	var plans []frontmatter.ReorderPlan
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		plan, err := frontmatter.PlanReorder(file, string(content), firstKeys, lastKeys)
+		if err != nil {
+			// no front matter — skip silently
+			continue
+		}
+		if plan.HasChange || len(plan.MissingKeys) > 0 {
+			plans = append(plans, plan)
+		}
+	}
+
+	if len(plans) == 0 {
+		fmt.Println("No files need reordering.")
+		return nil
+	}
+
+	actionCount := 0
+	for _, p := range plans {
+		fmt.Printf("  %s\n", displayPath(p.FilePath, fmc.PathKeep))
+		if p.HasChange {
+			fmt.Printf("    %s\n    → %s\n", strings.Join(p.OldOrder, ", "), strings.Join(p.NewOrder, ", "))
+			actionCount++
+		} else {
+			fmt.Printf("    (order unchanged)\n")
+		}
+		if len(p.MissingKeys) > 0 {
+			fmt.Printf("    not found (will not be created): %s\n", strings.Join(p.MissingKeys, ", "))
+		}
+	}
+
+	if actionCount == 0 {
+		fmt.Println("\nNo order changes to apply (all listed keys were missing).")
+		return nil
+	}
+
+	fmt.Printf("\nApply reorder to %d file(s)? [Y/n]: ", actionCount)
+	var response string
+	fmt.Scanln(&response)
+	if response != "" && strings.ToLower(response) != "y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	for _, plan := range plans {
+		if !plan.HasChange {
+			continue
+		}
+		if err := frontmatter.ApplyReorder(plan); err != nil {
+			fmt.Printf("error: %s: %v\n", plan.FilePath, err)
+		} else {
+			fmt.Printf("  wrote %s\n", displayPath(plan.FilePath, fmc.PathKeep))
+		}
+	}
+	return nil
+}
+
+func (fmc *FrontMatterChecker) runGenID(files []string) error {
+	type filePlan struct {
+		file   string
+		policy frontmatter.PropertyPolicy
+		reason string // "missing/empty" or "invalid UUID"
+	}
+
+	var plans []filePlan
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		fm, err := frontmatter.GetFrontMatterMap(string(content))
+		if err != nil {
+			fmt.Printf("warning: %s: %v\n", file, err)
+			continue
+		}
+
+		idVal, exists := fm["id"]
+		idStr, _ := idVal.(string)
+
+		var reason string
+		var action frontmatter.PropertyAction
+		switch {
+		case !exists || strings.TrimSpace(idStr) == "":
+			reason = "missing or empty"
+			action = frontmatter.ActionOverwriteIfEmpty
+		case fmc.GenIDOverwriteInvalid && !reUUID.MatchString(idStr):
+			reason = fmt.Sprintf("invalid UUID (current: %q)", idStr)
+			action = frontmatter.ActionOverwriteAlways
+		default:
+			continue
+		}
+
+		plans = append(plans, filePlan{
+			file: file,
+			policy: frontmatter.PropertyPolicy{
+				Key:    "id",
+				Action: action,
+				Source: frontmatter.SourceComputed,
+				Fn:     "uuid",
+			},
+			reason: reason,
+		})
+	}
+
+	if len(plans) == 0 {
+		fmt.Println("No files need an ID.")
+		return nil
+	}
+
+	fmt.Printf("Will set id on %d file(s):\n", len(plans))
+	for _, p := range plans {
+		fmt.Printf("  %s  (%s)\n", displayPath(p.file, fmc.PathKeep), p.reason)
+	}
+
+	fmt.Print("\nApply these changes? [Y/n]: ")
+	var response string
+	fmt.Scanln(&response)
+	if response != "" && strings.ToLower(response) != "y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	for _, p := range plans {
+		content, err := os.ReadFile(p.file)
+		if err != nil {
+			fmt.Printf("error: %s: %v\n", p.file, err)
+			continue
+		}
+		changePlan, err := frontmatter.PlanChanges(p.file, string(content), map[string]any{"id": ""}, []frontmatter.PropertyPolicy{p.policy})
+		if err != nil {
+			fmt.Printf("error: %s: %v\n", p.file, err)
+			continue
+		}
+		if err := frontmatter.ApplyChangePlan(changePlan); err != nil {
+			fmt.Printf("error: %s: %v\n", p.file, err)
+		} else {
+			fmt.Printf("  wrote %s\n", displayPath(p.file, fmc.PathKeep))
+		}
+	}
 	return nil
 }
 

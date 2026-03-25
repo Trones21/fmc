@@ -2,12 +2,20 @@ package frontmatter
 
 import "strings"
 
-// keyPath splits a dot-notation key into path segments.
+// KeyPath splits a dot-notation key into path segments.
 // "last_update.date" → ["last_update", "date"]
-func keyPath(key string) []string { return strings.Split(key, ".") }
+func KeyPath(key string) []string { return strings.Split(key, ".") }
 
-// nestedGet traverses a dot-split key path into m, returning the value and
+// keyPath is the unexported alias used within the package.
+func keyPath(key string) []string { return KeyPath(key) }
+
+// NestedGet traverses a dot-split key path into m, returning the value and
 // whether it was found.
+func NestedGet(m map[string]any, path []string) (any, bool) {
+	return nestedGet(m, path)
+}
+
+// nestedGet is the unexported implementation.
 func nestedGet(m map[string]any, path []string) (any, bool) {
 	if len(path) == 0 {
 		return nil, false
