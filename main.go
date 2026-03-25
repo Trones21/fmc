@@ -1997,7 +1997,13 @@ func (fmc *FrontMatterChecker) runGenID(files []string) error {
 		fmt.Printf("  %s  (%s)\n", displayPath(p.file, fmc.PathKeep), p.reason)
 	}
 
-	fmt.Print("\nApply these changes? [Y/n]: ")
+	modifiedFiles := make([]string, len(plans))
+	for i, p := range plans {
+		modifiedFiles[i] = p.file
+	}
+	warnPotentialBrokenLinks(modifiedFiles, files)
+
+	fmt.Print("Apply these changes? [Y/n]: ")
 	var response string
 	fmt.Scanln(&response)
 	if response != "" && strings.ToLower(response) != "y" {
@@ -2023,6 +2029,104 @@ func (fmc *FrontMatterChecker) runGenID(files []string) error {
 		}
 	}
 	return nil
+}
+
+// warnPotentialBrokenLinks searches all files for lines that look like links
+// to any of the target files (by filename stem or current id/slug value).
+// It prints a warning and a table of candidates before destructive operations
+// that change id or slug. The search is heuristic — not authoritative.
+func warnPotentialBrokenLinks(targetFiles []string, allFiles []string) {
+	type hit struct {
+		linkFile string
+		line     int
+		text     string
+		term     string
+	}
+
+	// Build a map of search terms → originating target file.
+	type termInfo struct {
+		targetFile string
+		kind       string // "filename" or "id" or "slug"
+	}
+	terms := make(map[string]termInfo)
+	for _, f := range targetFiles {
+		stem := strings.TrimSuffix(filepath.Base(f), filepath.Ext(f))
+		if stem != "" {
+			terms[stem] = termInfo{f, "filename"}
+		}
+		content, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		fm, err := frontmatter.GetFrontMatterMap(string(content))
+		if err != nil || fm == nil {
+			continue
+		}
+		for _, key := range []string{"id", "slug"} {
+			if v, ok := fm[key]; ok {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					terms[s] = termInfo{f, key}
+				}
+			}
+		}
+	}
+
+	if len(terms) == 0 {
+		return
+	}
+
+	var hits []hit
+	targetSet := make(map[string]bool, len(targetFiles))
+	for _, f := range targetFiles {
+		targetSet[f] = true
+	}
+
+	for _, f := range allFiles {
+		if targetSet[f] {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for term, info := range terms {
+				if strings.Contains(line, term) {
+					hits = append(hits, hit{
+						linkFile: f,
+						line:     i + 1,
+						text:     strings.TrimSpace(line),
+						term:     fmt.Sprintf("%s (%s in %s)", term, info.kind, filepath.Base(info.targetFile)),
+					})
+					break // one hit per line
+				}
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("WARNING: Changing 'id' or 'slug' will break any existing links to these files.")
+	fmt.Println("After making changes, run 'npx docusaurus build' to find broken links.")
+	fmt.Println("Fix them with find-and-replace (time-consuming but straightforward).")
+	fmt.Println()
+
+	if len(hits) == 0 {
+		fmt.Println("No potential links to the affected files were found.")
+		fmt.Println()
+		return
+	}
+
+	fmt.Printf("Potential links found (%d) — not authoritative, verify before proceeding:\n\n", len(hits))
+	tbl := NewTable("File", "Line", "Matched Term", "Content")
+	for _, h := range hits {
+		preview := h.text
+		if len(preview) > 80 {
+			preview = preview[:77] + "..."
+		}
+		tbl.AddRow(h.linkFile, fmt.Sprintf("%d", h.line), h.term, preview)
+	}
+	tbl.Print()
+	fmt.Println()
 }
 
 func (fmc *FrontMatterChecker) replaceKeys(files []string) error {
@@ -2101,6 +2205,18 @@ func (fmc *FrontMatterChecker) createFrom(files []string) error {
 			Fn:      fn,
 			FromKey: fromKey,
 		})
+	}
+
+	// Warn about potential broken links when writing to id or slug.
+	touchesLinkKey := false
+	for _, p := range policies {
+		if p.Key == "id" || p.Key == "slug" {
+			touchesLinkKey = true
+			break
+		}
+	}
+	if touchesLinkKey {
+		warnPotentialBrokenLinks(files, files)
 	}
 
 	return fmc.fixFiles(files, template, policies)
