@@ -614,3 +614,153 @@ func TestAnalyzeIssuesOnly(t *testing.T) {
 	// gang-of-four.md is missing title — should appear
 	assertContains(t, output, "gang-of-four.md")
 }
+
+// ── generateSources / rollup ────────────────────────────────────────────────
+
+func TestGenerateSourcesFilepath(t *testing.T) {
+	// Build a small tree: docs/technical/go/tutorial.md
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "technical", "go")
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ntitle: \"Tutorial\"\ntags: []\nkeywords: []\n---\nBody.\n"
+	filePath := filepath.Join(subdir, "tutorial.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFmc(t, "-generateSources", "filepath", "-files", filePath)
+
+	got := readFile(t, filePath)
+	assertContains(t, got, "tag_sources:")
+	assertContains(t, got, "filepath:")
+	assertContains(t, got, "tag_list:")
+	assertContains(t, got, "technical")
+	assertContains(t, got, "go")
+	assertContains(t, got, "keyword_sources:")
+	assertContains(t, got, "keyword_list:")
+	assertContains(t, got, "date_last_generated:")
+}
+
+func TestGenerateSourcesUnknown(t *testing.T) {
+	dir := copyToTemp(t, "scalar-date.md")
+	runFmcExpectFail(t, "-generateSources", "llm.unknown", "-dir", dir)
+}
+
+func TestRollupTags(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+tags:
+  - existing
+tag_sources:
+  filepath:
+    date_last_generated: "2024-01-01"
+    tag_list:
+      - technical
+      - go
+---
+Body.
+`
+	filePath := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFmc(t, "-rollup", "tags", "-rollupSources", "filepath", "-files", filePath)
+
+	got := readFile(t, filePath)
+	// existing tag preserved + new tags added
+	assertContains(t, got, "existing")
+	assertContains(t, got, "technical")
+	assertContains(t, got, "go")
+}
+
+func TestRollupNoPreserve(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+tags:
+  - old-tag
+tag_sources:
+  filepath:
+    date_last_generated: "2024-01-01"
+    tag_list:
+      - new-tag
+---
+Body.
+`
+	filePath := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFmc(t, "-rollup", "tags", "-rollupSources", "filepath", "-rollupNoPreserve", "-files", filePath)
+
+	got := readFile(t, filePath)
+	assertContains(t, got, "new-tag")
+	assertNotContains(t, got, "old-tag")
+}
+
+func TestRollupAll(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+tags: []
+tag_sources:
+  filepath:
+    date_last_generated: "2024-01-01"
+    tag_list:
+      - go
+  llm:
+    gpt-4o:
+      date_last_generated: "2024-01-01"
+      tag_list:
+        - tutorial
+---
+Body.
+`
+	filePath := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFmc(t, "-rollup", "tags", "-rollupSources", "all", "-files", filePath)
+
+	got := readFile(t, filePath)
+	assertContains(t, got, "go")
+	assertContains(t, got, "tutorial")
+}
+
+func TestRollupTagsAndKeywords(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+tags: []
+keywords: []
+tag_sources:
+  filepath:
+    date_last_generated: "2024-01-01"
+    tag_list:
+      - go
+keyword_sources:
+  filepath:
+    date_last_generated: "2024-01-01"
+    keyword_list:
+      - golang
+---
+Body.
+`
+	filePath := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFmc(t, "-rollup", "tags,keywords", "-rollupSources", "filepath", "-files", filePath)
+
+	got := readFile(t, filePath)
+	assertContains(t, got, "go")
+	assertContains(t, got, "golang")
+}
+
+func TestRollupMissingSourcesFlag(t *testing.T) {
+	dir := copyToTemp(t, "scalar-date.md")
+	runFmcExpectFail(t, "-rollup", "tags", "-dir", dir)
+}

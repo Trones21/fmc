@@ -84,6 +84,14 @@ func printHelp() {
 	printFlag(out, "fullConform", "")
 	printFlag(out, "fixOrder", "")
 
+	section(out, "Tags & Keywords — Source Generation:")
+	printFlag(out, "generateSources", "<filepath>")
+
+	section(out, "Tags & Keywords — Rollup:")
+	printFlag(out, "rollup", "<tags|keywords|tags,keywords>")
+	printFlag(out, "rollupSources", "<source1,source2|all>")
+	printFlag(out, "rollupNoPreserve", "")
+
 	section(out, "Display Options:")
 	printFlag(out, "keepNonVariadicPathSegments", "<N>")
 	printFlag(out, "keepNVPS", "<N>")
@@ -443,6 +451,68 @@ Examples:
     fmc -t template.json -removeExtraProps -files ./docs/my-post.md
 
 `)
+	case "generateSources", "rollup":
+		fmt.Print(`Tags & Keywords — Source Generation and Rollup
+==============================================
+
+Front matter structure managed by these flags:
+
+  tags: [go, tutorial]           # Docusaurus public /tags/ navigation
+  keywords: [golang, beginner]   # SEO <meta keywords>
+  internal_tags: [needs-review]  # Never surfaced to Docusaurus
+
+  tag_sources:
+    filepath:
+      date_last_generated: "2024-01-01"
+      tag_list: [technical, go]
+    llm:
+      gpt-4o:
+        date_last_generated: "2024-01-01"
+        tag_list: [tutorial, beginners]
+
+  keyword_sources:
+    filepath:
+      date_last_generated: "2024-01-01"
+      keyword_list: [technical, go]
+    llm:
+      gpt-4o:
+        date_last_generated: "2024-01-01"
+        keyword_list: [golang, api]
+
+-generateSources <source>
+
+  Populates tag_sources.<source> and keyword_sources.<source> for every file.
+  Sets date_last_generated to today. Overwrites any previous run from that
+  source. Currently supported sources:
+
+    filepath   Derives segments from the file's directory path
+               (drops root prefix and filename; inner dirs become tags)
+
+-rollup <tags|keywords|tags,keywords>
+-rollupSources <source1,source2|all>
+-rollupNoPreserve
+
+  Merges staged source lists into the top-level tags or keywords field.
+  -rollupSources selects which sources to include; use 'all' to include every
+  source present. Nested LLM sources use dot notation (e.g. llm.gpt-4o).
+  By default existing values are preserved (set union). Pass -rollupNoPreserve
+  to replace existing values with only the union of the selected sources —
+  removed items are shown explicitly in the preview.
+
+Examples:
+  Generate filepath sources for all docs:
+    fmc -generateSources filepath -dir ./docs
+
+  Roll up filepath tags into the tags field (preserve existing):
+    fmc -rollup tags -rollupSources filepath -dir ./docs
+
+  Roll up all sources into both tags and keywords:
+    fmc -rollup tags,keywords -rollupSources all -dir ./docs
+
+  Replace tags entirely with what llm.gpt-4o suggests:
+    fmc -rollup tags -rollupSources llm.gpt-4o -rollupNoPreserve -dir ./docs
+
+`)
 	default:
 		fmt.Printf("no help topic %q\n\n", topic)
 		fmt.Println("Available help topics:")
@@ -457,6 +527,7 @@ Examples:
 		fmt.Println("  fmc help checkFormat")
 		fmt.Println("  fmc help analyzeSEO")
 		fmt.Println("  fmc help analyzeOrder")
+		fmt.Println("  fmc help generateSources")
 		fmt.Println()
 		fmt.Println("For the full flag list run: fmc help")
 		os.Exit(1)

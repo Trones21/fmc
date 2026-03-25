@@ -71,6 +71,10 @@ type FrontMatterChecker struct {
 	ListValues           repeatableFlag // each entry: property name
 	ListDateFormats       repeatableFlag // each entry: property name
 	ListDateFormatsDetail repeatableFlag // each entry: property name
+	GenerateSources       string         // source name to generate: "filepath"
+	Rollup                string         // CSV: "tags", "keywords", or "tags,keywords"
+	RollupSources         string         // CSV of source paths, or "all"
+	RollupNoPreserve      bool           // replace existing tags/keywords instead of unioning
 }
 
 func main() {
@@ -130,6 +134,10 @@ func main() {
 	flag.Var(&tryCast, "tryCast", "Cast a property's value to the target type, e.g. disable:bool (repeatable)")
 	keysToTop := flag.String("keysToTop", "", "CSV of keys to move to the front of the front matter, in order (e.g. id,title,slug)")
 	keysToBottom := flag.String("keysToBottom", "", "CSV of keys to move to the end of the front matter, in order (e.g. tags,last_update)")
+	generateSources := flag.String("generateSources", "", "Populate tag_sources and keyword_sources from a source: filepath")
+	rollup := flag.String("rollup", "", "Roll up staged sources into tags/keywords: tags, keywords, or tags,keywords")
+	rollupSources := flag.String("rollupSources", "", "CSV of sources to roll up, or 'all' (e.g. filepath,llm.gpt-4o)")
+	rollupNoPreserve := flag.Bool("rollupNoPreserve", false, "Replace existing tags/keywords instead of unioning with them")
 
 	///// Make Changes to Front Matter ///////
 	//Single Property CRUD
@@ -223,6 +231,10 @@ func main() {
 	checker.ListEmpty = *listEmpty
 	checker.ListEmptyDetails = *listEmptyDetails
 	checker.SortBy = *sortBy
+	checker.GenerateSources = *generateSources
+	checker.Rollup = *rollup
+	checker.RollupSources = *rollupSources
+	checker.RollupNoPreserve = *rollupNoPreserve
 
 	if *files != "" {
 		checker.Files = strings.Split(*files, ",")
@@ -264,6 +276,14 @@ func (fmc *FrontMatterChecker) Run() error {
 
 	if len(fmc.CreateFrom) > 0 {
 		return fmc.createFrom(filesToProcess)
+	}
+
+	if fmc.GenerateSources != "" {
+		return fmc.runGenerateSources(filesToProcess)
+	}
+
+	if fmc.Rollup != "" {
+		return fmc.runRollup(filesToProcess)
 	}
 
 	if len(fmc.SetValues) > 0 {
@@ -2220,6 +2240,248 @@ func (fmc *FrontMatterChecker) createFrom(files []string) error {
 	}
 
 	return fmc.fixFiles(files, template, policies)
+}
+
+// runGenerateSources populates tag_sources and keyword_sources from the named
+// source. Currently only "filepath" is supported.
+func (fmc *FrontMatterChecker) runGenerateSources(files []string) error {
+	switch fmc.GenerateSources {
+	case "filepath":
+		return fmc.generateSourcesFilepath(files)
+	default:
+		return fmt.Errorf("unknown source %q: only 'filepath' is currently supported", fmc.GenerateSources)
+	}
+}
+
+func (fmc *FrontMatterChecker) generateSourcesFilepath(files []string) error {
+	today := time.Now().Format("2006-01-02")
+	var plans []frontmatter.FileChangePlan
+
+	for _, file := range files {
+		segments := frontmatter.ExtractPathSegments(file, 0)
+		if len(segments) == 0 {
+			continue
+		}
+		// Convert []string to []any for YAML marshaling consistency.
+		segsAny := make([]any, len(segments))
+		for i, s := range segments {
+			segsAny[i] = s
+		}
+		plan := frontmatter.FileChangePlan{FilePath: file}
+		plan.Changes = []frontmatter.PropChange{
+			{Key: "tag_sources.filepath.date_last_generated", NewValue: today},
+			{Key: "tag_sources.filepath.tag_list", NewValue: segsAny},
+			{Key: "keyword_sources.filepath.date_last_generated", NewValue: today},
+			{Key: "keyword_sources.filepath.keyword_list", NewValue: segsAny},
+		}
+		plans = append(plans, plan)
+	}
+
+	return applyPlans(plans)
+}
+
+// runRollup merges staged source lists into the top-level tags/keywords fields.
+func (fmc *FrontMatterChecker) runRollup(files []string) error {
+	props := csvFields(fmc.Rollup)
+	if len(props) == 0 {
+		return fmt.Errorf("-rollup requires a value: tags, keywords, or tags,keywords")
+	}
+	sources := csvFields(fmc.RollupSources)
+	if len(sources) == 0 {
+		return fmt.Errorf("-rollupSources is required when using -rollup")
+	}
+
+	for _, p := range props {
+		if p != "tags" && p != "keywords" {
+			return fmt.Errorf("-rollup value %q not recognised: use tags, keywords, or tags,keywords", p)
+		}
+	}
+
+	var plans []frontmatter.FileChangePlan
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		fm, err := frontmatter.GetFrontMatterMap(string(content))
+		if err != nil || fm == nil {
+			continue
+		}
+
+		plan := frontmatter.FileChangePlan{FilePath: file}
+
+		for _, prop := range props {
+			sourcesProp, listKey := rollupPropNames(prop)
+
+			sourcesMap, _ := fm[sourcesProp].(map[string]any)
+			union := collectSourceUnion(sourcesMap, sources, listKey)
+			if len(union) == 0 {
+				continue
+			}
+
+			existing := frontmatter.ToStringSlice(fm[prop])
+			var newVal []string
+			if fmc.RollupNoPreserve {
+				newVal = union
+			} else {
+				newVal = stringUnion(existing, union)
+			}
+
+			if stringSlicesEqualUnordered(existing, newVal) {
+				continue
+			}
+
+			// Build old/new as []any for display and YAML consistency.
+			oldAny := stringSliceToAny(existing)
+			newAny := stringSliceToAny(newVal)
+
+			// If noPreserve, annotate removed items in the plan display.
+			if fmc.RollupNoPreserve {
+				removed := stringSubtract(existing, newVal)
+				if len(removed) > 0 {
+					fmt.Printf("note: %s — removing from %s: %v\n", displayPath(file, fmc.PathKeep), prop, removed)
+				}
+			}
+
+			plan.Changes = append(plan.Changes, frontmatter.PropChange{
+				Key:      prop,
+				OldValue: oldAny,
+				NewValue: newAny,
+			})
+		}
+
+		if plan.HasChanges() {
+			plans = append(plans, plan)
+		}
+	}
+
+	return applyPlans(plans)
+}
+
+// rollupPropNames returns the sources property name and list key for a given
+// top-level property ("tags" → "tag_sources", "tag_list").
+func rollupPropNames(prop string) (sourcesProp, listKey string) {
+	switch prop {
+	case "tags":
+		return "tag_sources", "tag_list"
+	case "keywords":
+		return "keyword_sources", "keyword_list"
+	}
+	return prop + "_sources", prop[:len(prop)-1] + "_list"
+}
+
+// collectSourceUnion gathers the union of all tag/keyword lists from the
+// selected sources within a sources map. Source names use dot notation for
+// nested sources (e.g. "llm.gpt-4o"). "all" walks the entire tree.
+func collectSourceUnion(sourcesMap map[string]any, sourceNames []string, listKey string) []string {
+	if sourcesMap == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var result []string
+
+	addList := func(m map[string]any) {
+		for _, v := range frontmatter.ToStringSlice(m[listKey]) {
+			if !seen[v] {
+				seen[v] = true
+				result = append(result, v)
+			}
+		}
+	}
+
+	if len(sourceNames) == 1 && sourceNames[0] == "all" {
+		walkSourceMap(sourcesMap, listKey, addList)
+		return result
+	}
+
+	for _, name := range sourceNames {
+		path := strings.Split(name, ".")
+		val, ok := frontmatter.NestedGet(sourcesMap, path)
+		if !ok {
+			continue
+		}
+		m, ok := val.(map[string]any)
+		if !ok {
+			continue
+		}
+		addList(m)
+	}
+	return result
+}
+
+// walkSourceMap recursively visits every leaf source map (one that contains
+// listKey) and calls fn on it.
+func walkSourceMap(m map[string]any, listKey string, fn func(map[string]any)) {
+	if _, hasListKey := m[listKey]; hasListKey {
+		fn(m)
+		return
+	}
+	for _, v := range m {
+		if child, ok := v.(map[string]any); ok {
+			walkSourceMap(child, listKey, fn)
+		}
+	}
+}
+
+// stringUnion returns the union of a and b preserving order (a first, then new
+// items from b).
+func stringUnion(a, b []string) []string {
+	seen := make(map[string]bool, len(a))
+	result := append([]string{}, a...)
+	for _, s := range a {
+		seen[s] = true
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// stringSubtract returns elements in a that are not in b.
+func stringSubtract(a, b []string) []string {
+	bSet := make(map[string]bool, len(b))
+	for _, s := range b {
+		bSet[s] = true
+	}
+	var out []string
+	for _, s := range a {
+		if !bSet[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// stringSlicesEqualUnordered returns true if both slices have identical
+// elements regardless of order.
+func stringSlicesEqualUnordered(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, s := range a {
+		counts[s]++
+	}
+	for _, s := range b {
+		counts[s]--
+		if counts[s] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSliceToAny(s []string) []any {
+	out := make([]any, len(s))
+	for i, v := range s {
+		out[i] = v
+	}
+	return out
 }
 
 func joinOrDash(items []string) string {

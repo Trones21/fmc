@@ -82,6 +82,30 @@ func pathSegmentTags(params map[string]any, ctx ResolveContext) (any, error) {
 	return result, nil
 }
 
+// ExtractPathSegments returns the inner path segments of filePath: drops the
+// first (root/prefix) and last (filename) segment, then drops an additional
+// skip leading segments. Returns nil when there are no meaningful segments.
+func ExtractPathSegments(filePath string, skip int) []string {
+	parts := strings.Split(filepath.ToSlash(filePath), "/")
+	var segments []string
+	for _, p := range parts {
+		if p != "" {
+			segments = append(segments, p)
+		}
+	}
+	if len(segments) <= 2 {
+		return nil
+	}
+	segments = segments[1 : len(segments)-1]
+	if skip >= len(segments) {
+		return nil
+	}
+	return segments[skip:]
+}
+
+// ToStringSlice coerces a YAML-decoded value into a []string.
+func ToStringSlice(v any) []string { return toStringSlice(v) }
+
 func toStringSlice(v any) []string {
 	if v == nil {
 		return nil
