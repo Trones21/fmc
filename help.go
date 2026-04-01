@@ -139,7 +139,7 @@ func printHelp() {
 	section(out, "Export:")
 	printFlag(out, "exportJSON", "<output.json>")
 	printFlag(out, "urlStartsAfter", "<path>")
-	printFlag(out, "exportJSONLinkKey", "<slug|id|filename>")
+	printFlag(out, "exportJSONLinkKey", "<slug|slug_strict|id|filename>")
 	printFlag(out, "exportJSONFields", "<id,title,tags,...>")
 	printFlag(out, "exportJSONOnMissing", "<skip_file|include_file_add_empty>")
 
@@ -772,14 +772,16 @@ Flags
     Example: -urlStartsAfter /home/user/repo/docs
       /home/user/repo/docs/technical/intro.md  →  /technical/intro
 
-  -exportJSONLinkKey <slug|id|filename>   (default: slug)
+  -exportJSONLinkKey <slug|slug_strict|id|filename>   (default: slug)
     Which value to use as the URL path segment:
 
-    slug      Use the slug front matter field. If slug is a relative value
-              (no leading /), it is resolved against the file's directory.
-              Falls back to filename if slug is absent.
-    id        Use the id field. Falls back to filename if absent.
-    filename  Always derive from the file path (ignores slug/id).
+    slug         Use the slug front matter field. If slug is a relative value
+                 (no leading /), it is resolved against the file's directory.
+                 Falls back to filename if slug is absent.
+    slug_strict  Same as slug but leaves link empty ("") when slug is absent.
+                 Use this when you want to identify files that still need a slug.
+    id           Use the id field. Falls back to filename if absent.
+    filename     Always derive from the file path (ignores slug/id).
 
   -exportJSONFields <csv>   (optional)
     Explicit comma-separated list of front matter fields to include.

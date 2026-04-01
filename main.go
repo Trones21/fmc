@@ -231,7 +231,7 @@ func main() {
 	///// Export /////
 	exportJSON := flag.String("exportJSON", "", "Write front matter data for all files to a JSON array at this path")
 	urlStartsAfter := flag.String("urlStartsAfter", "", "Filesystem path prefix to strip when computing link (e.g. /home/user/docs)")
-	exportJSONLinkKey := flag.String("exportJSONLinkKey", "slug", "Front matter key to use as the URL path: slug (default), id, or filename")
+	exportJSONLinkKey := flag.String("exportJSONLinkKey", "slug", "Front matter key to use as the URL path: slug (default), slug_strict (empty if no slug), id, or filename")
 	exportJSONOnMissing := flag.String("exportJSONOnMissing", "skip_file", "Behavior when required fields are missing: skip_file (default) or include_file_add_empty")
 	exportJSONFields := flag.String("exportJSONFields", "", "CSV of front matter fields to include in export (overrides template and default set)")
 
@@ -2095,7 +2095,7 @@ func (fmc *FrontMatterChecker) runExportJSON(files []string) error {
 		// Synthetic: link.
 		var link string
 		switch linkKey {
-		case "slug":
+		case "slug", "slug_strict":
 			if s, ok := fm["slug"].(string); ok && s != "" {
 				if strings.HasPrefix(s, "/") {
 					// Absolute slug — use as-is.
@@ -2105,6 +2105,8 @@ func (fmc *FrontMatterChecker) runExportJSON(files []string) error {
 					dir := fileToURLPath(filepath.Dir(file), fmc.URLStartsAfter)
 					link = dir + "/" + s
 				}
+			} else if linkKey == "slug_strict" {
+				link = "" // no fallback
 			} else {
 				link = fileToURLPath(file, fmc.URLStartsAfter)
 			}
