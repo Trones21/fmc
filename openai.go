@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const openAIURL = "https://api.openai.com/v1/chat/completions"
@@ -116,7 +117,8 @@ func systemPrompt(fields []string) string {
 
 // GenerateFields calls the OpenAI Chat Completions API with structured outputs
 // and returns the parsed response. Only the fields listed in wantFields are
-// requested; the rest are omitted from the schema.
+// requested; the rest are omitted from the schema. Rate-limit responses are
+// retried with exponential backoff starting at 2 seconds.
 func GenerateFields(apiKey, model string, wantFields []string, markdownContent string) (GeneratedFields, error) {
 	if err := validateModel(model); err != nil {
 		return GeneratedFields{}, err
@@ -143,55 +145,80 @@ func GenerateFields(apiKey, model string, wantFields []string, markdownContent s
 		return GeneratedFields{}, fmt.Errorf("marshaling request: %w", err)
 	}
 
+	const maxRetries = 5
+	backoff := 2 * time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		result, retryable, err := doOpenAIRequest(apiKey, bodyBytes)
+		if err == nil {
+			return result, nil
+		}
+		if !retryable || attempt == maxRetries {
+			return GeneratedFields{}, err
+		}
+		fmt.Printf("  rate limited — retrying in %s...\n", backoff)
+		time.Sleep(backoff)
+		backoff *= 2
+	}
+	// unreachable
+	return GeneratedFields{}, fmt.Errorf("exceeded retry limit")
+}
+
+// doOpenAIRequest sends one HTTP request and parses the response.
+// Returns (result, retryable, error). retryable is true only for rate-limit responses.
+func doOpenAIRequest(apiKey string, bodyBytes []byte) (GeneratedFields, bool, error) {
 	req, err := http.NewRequest(http.MethodPost, openAIURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return GeneratedFields{}, fmt.Errorf("building request: %w", err)
+		return GeneratedFields{}, false, fmt.Errorf("building request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return GeneratedFields{}, fmt.Errorf("calling OpenAI: %w", err)
+		return GeneratedFields{}, false, fmt.Errorf("calling OpenAI: %w", err)
 	}
 	defer resp.Body.Close()
 
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return GeneratedFields{}, fmt.Errorf("reading response body: %w", err)
+		return GeneratedFields{}, false, fmt.Errorf("reading response body: %w", err)
 	}
 
 	var apiResp openAIResponse
 	if err := json.Unmarshal(rawBody, &apiResp); err != nil {
-		return GeneratedFields{}, fmt.Errorf("parsing response (status %d): %w\nbody: %s", resp.StatusCode, err, rawBody)
+		return GeneratedFields{}, false, fmt.Errorf("parsing response (status %d): %w\nbody: %s", resp.StatusCode, err, rawBody)
 	}
 
 	// OpenAI returns errors either as non-2xx status or as a 200 with an error object.
 	if apiResp.Error != nil {
-		return GeneratedFields{}, fmt.Errorf("OpenAI error [%s/%s]: %s", apiResp.Error.Type, apiResp.Error.Code, apiResp.Error.Message)
+		retryable := strings.Contains(apiResp.Error.Code, "rate_limit") || resp.StatusCode == 429
+		return GeneratedFields{}, retryable, fmt.Errorf("OpenAI error [%s/%s]: %s", apiResp.Error.Type, apiResp.Error.Code, apiResp.Error.Message)
+	}
+	if resp.StatusCode == 429 {
+		return GeneratedFields{}, true, fmt.Errorf("OpenAI returned HTTP 429 (rate limited)")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return GeneratedFields{}, fmt.Errorf("OpenAI returned HTTP %d: %s", resp.StatusCode, rawBody)
+		return GeneratedFields{}, false, fmt.Errorf("OpenAI returned HTTP %d: %s", resp.StatusCode, rawBody)
 	}
 
 	if len(apiResp.Choices) == 0 {
-		return GeneratedFields{}, fmt.Errorf("OpenAI returned no choices")
+		return GeneratedFields{}, false, fmt.Errorf("OpenAI returned no choices")
 	}
 
 	choice := apiResp.Choices[0]
 	switch choice.FinishReason {
 	case "content_filter":
-		return GeneratedFields{}, fmt.Errorf("OpenAI content filter triggered — skipping file")
+		return GeneratedFields{}, false, fmt.Errorf("OpenAI content filter triggered — skipping file")
 	case "length":
-		// Structured outputs with strict mode should not truncate, but handle it defensively.
-		return GeneratedFields{}, fmt.Errorf("OpenAI response truncated (finish_reason: length)")
+		return GeneratedFields{}, false, fmt.Errorf("OpenAI response truncated (finish_reason: length)")
 	}
 
 	var result GeneratedFields
 	if err := json.Unmarshal([]byte(choice.Message.Content), &result); err != nil {
-		return GeneratedFields{}, fmt.Errorf("parsing structured output: %w\ncontent: %s", err, choice.Message.Content)
+		return GeneratedFields{}, false, fmt.Errorf("parsing structured output: %w\ncontent: %s", err, choice.Message.Content)
 	}
-	return result, nil
+	return result, false, nil
 }
 
 func validateModel(model string) error {

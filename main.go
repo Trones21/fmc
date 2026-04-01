@@ -54,7 +54,8 @@ type FrontMatterChecker struct {
 	ListEmpty            bool           // scan all keys, show empty-counts table
 	ListEmptyDetails     bool           // per-file breakdown: file | # empty | keys
 	ListEmptyForKey      repeatableFlag // each entry: property name
-	SortBy               string         // "name" or "count" for list-empty outputs
+	ListLength           bool           // file length table: lines and chars, total and content-only
+	SortBy               string         // sort key for list commands (name, count, lines, chars, etc.)
 	InspectProps         repeatableFlag // each entry: property name
 	PathKeep             int            // -1 = full path, 0 = filename only, N = last N dirs + filename
 	CreateFrontMatter    bool
@@ -75,11 +76,34 @@ type FrontMatterChecker struct {
 	Rollup                string         // CSV: "tags", "keywords", or "tags,keywords"
 	RollupSources         string         // CSV of source paths, or "all"
 	RollupNoPreserve      bool           // replace existing tags/keywords instead of unioning
-	LLMFields             string         // CSV of fields to generate: title,description,tags,keywords
-	LLMSkipFresherThan    int            // skip file if date_last_generated is within N days (0 = disabled)
-	LLMRegenerateIfNewer  bool           // regenerate if content date field > date_last_generated
-	ApplyLLMTitle         string         // "<source[:action]>" e.g. "llm.gpt-4o:if_empty"
-	ApplyLLMDescription   string         // "<source[:action]>" e.g. "llm.gpt-4o:always"
+	LLMFields                   string         // CSV of fields to generate: title,description,tags,keywords
+	LLMSkipFresherThan          int            // skip file if date_last_generated is within N days (0 = disabled)
+	LLMRegenerateIfNewer        bool           // regenerate if content date field > date_last_generated
+	LLMSkipIfContentLinesBelowN int            // skip if content (excl. FM) has fewer than N lines
+	LLMSkipIfContentCharsBelowN int            // skip if content (excl. FM) has fewer than N chars
+	LLMSkipIfPropEquals         repeatableFlag // each entry: "key:value" — skip if FM property matches
+	ApplyLLMTitle               string         // "<source[:action]>" e.g. "llm.gpt-4o:if_empty"
+	ApplyLLMDescription         string         // "<source[:action]>" e.g. "llm.gpt-4o:always"
+	PruneFMIfLinesBelowN        int            // strip all FM (except kept props) if content < N lines
+	PruneFMIfCharsBelowN        int            // strip all FM (except kept props) if content < N chars
+	PruneFMKeepProps            string         // CSV of top-level FM keys to keep when pruning
+	SkipIfContentLinesBelowN    int            // exclude files from all operations if content < N lines
+	SkipIfContentLinesAboveN    int            // exclude files from all operations if content > N lines
+	SkipIfContentCharsBelowN    int            // exclude files from all operations if content < N chars
+	SkipIfContentCharsAboveN    int            // exclude files from all operations if content > N chars
+	SetValueIfContentLinesBelowN int           // setValue only on files whose content has < N lines
+	SetValueIfContentLinesAboveN int           // setValue only on files whose content has > N lines
+	SetValueIfContentCharsBelowN int           // setValue only on files whose content has < N chars
+	SetValueIfContentCharsAboveN int           // setValue only on files whose content has > N chars
+
+	ExportJSON            string // output JSON file path
+	URLStartsAfter        string // strip this path prefix when computing link
+	ExportJSONLinkKey     string // "slug", "id", or "filename" (default: "slug")
+	ExportJSONOnMissing   string // "skip_file" or "include_file_add_empty" (default: "skip_file")
+
+	ExtractLinks        string // "all", "internal", "external", or "images"
+	MakeLinksAbsolute   string // URL prefix to prepend to relative/absolute internal links
+	MakeLinksRelative   string // URL prefix to strip from absolute links
 }
 
 func main() {
@@ -150,8 +174,22 @@ func main() {
 	llmFields := flag.String("llmFields", "title,description,tags,keywords", "CSV of fields for LLM generation (default: all four)")
 	llmSkipFresherThan := flag.Int("llmSkipFresherThan", 0, "Skip files where LLM date_last_generated is within N days (0 = always regenerate)")
 	llmRegenerateIfNewer := flag.Bool("llmRegenerateIfNewer", false, "Regenerate if the content date field is newer than date_last_generated")
+	llmSkipIfContentLinesBelowN := flag.Int("llmSkipIfContentLinesBelowN", 0, "Skip files whose content (excl. front matter) has fewer than N lines (0 = disabled)")
+	llmSkipIfContentCharsBelowN := flag.Int("llmSkipIfContentCharsBelowN", 0, "Skip files whose content (excl. front matter) has fewer than N characters (0 = disabled)")
+	flag.Var(&checker.LLMSkipIfPropEquals, "llmSkipIfPropEquals", "Skip files where a front matter property equals a value: <key:value> (repeatable, e.g. disable:true)")
 	applyLLMTitle := flag.String("applyLLMGeneratedTitle", "", "Write staged LLM title to 'title': <source[:action]> (e.g. llm.gpt-4o:if_empty)")
 	applyLLMDescription := flag.String("applyLLMGeneratedDescription", "", "Write staged LLM description to 'description': <source[:action]> (e.g. llm.gpt-4o:if_empty)")
+	pruneFMIfLinesBelowN := flag.Int("pruneFMIfLinesBelowN", 0, "Strip all FM (except -pruneFMKeepProps) for files whose content has fewer than N lines (0 = disabled)")
+	pruneFMIfCharsBelowN := flag.Int("pruneFMIfCharsBelowN", 0, "Strip all FM (except -pruneFMKeepProps) for files whose content has fewer than N characters (0 = disabled)")
+	pruneFMKeepProps := flag.String("pruneFMKeepProps", "", "CSV of top-level FM keys to preserve when pruning (e.g. id,title)")
+	skipIfContentLinesBelowN := flag.Int("skipIfContentLinesBelowN", 0, "Exclude files from all operations if content has fewer than N lines (0 = disabled)")
+	skipIfContentLinesAboveN := flag.Int("skipIfContentLinesAboveN", 0, "Exclude files from all operations if content has more than N lines (0 = disabled)")
+	skipIfContentCharsBelowN := flag.Int("skipIfContentCharsBelowN", 0, "Exclude files from all operations if content has fewer than N characters (0 = disabled)")
+	skipIfContentCharsAboveN := flag.Int("skipIfContentCharsAboveN", 0, "Exclude files from all operations if content has more than N characters (0 = disabled)")
+	setValueIfContentLinesBelowN := flag.Int("setValueIfContentLinesBelowN", 0, "Apply -setValue only to files whose content has fewer than N lines (0 = disabled)")
+	setValueIfContentLinesAboveN := flag.Int("setValueIfContentLinesAboveN", 0, "Apply -setValue only to files whose content has more than N lines (0 = disabled)")
+	setValueIfContentCharsBelowN := flag.Int("setValueIfContentCharsBelowN", 0, "Apply -setValue only to files whose content has fewer than N characters (0 = disabled)")
+	setValueIfContentCharsAboveN := flag.Int("setValueIfContentCharsAboveN", 0, "Apply -setValue only to files whose content has more than N characters (0 = disabled)")
 
 	///// Make Changes to Front Matter ///////
 	//Single Property CRUD
@@ -164,7 +202,8 @@ func main() {
 	listEmpty := flag.Bool("listEmpty", false, "Show counts of empty properties across all keys in all files")
 	listEmptyDetails := flag.Bool("listEmptyDetails", false, "Per-file breakdown: file | # empty | empty keys (sortable with -sortBy)")
 	flag.Var(&checker.ListEmptyForKey, "listEmptyForKey", "List files where a specific property is empty or whitespace (repeatable)")
-	sortBy := flag.String("sortBy", "count", "Sort order for -listEmptyDetails: 'name' or 'count' (default: count)")
+	listLength := flag.Bool("listLength", false, "Table of file sizes: total and content-only line and character counts (sortable with -sortBy)")
+	sortBy := flag.String("sortBy", "", "Sort key (and optional direction) for list commands. Examples: name, name:desc, lines, lines:desc, content-lines, chars, content-chars, count")
 	flag.Var(&checker.InspectProps, "inspectProp", "Inspect nested YAML structure of a property across files (repeatable)")
 
 	///// Display Options /////
@@ -182,6 +221,17 @@ func main() {
 
 	//Other
 	fixOrder := flag.Bool("fixOrder", false, "Reorder properties to match the template")
+
+	///// Links /////
+	extractLinks := flag.String("extractLinks", "", "Extract links from file body into front matter: all, internal, external, or images")
+	makeLinksAbsolute := flag.String("makeLinksAbsolute", "", "Prepend this URL prefix to internal links (e.g. https://thomasrones.com)")
+	makeLinksRelative := flag.String("makeLinksRelative", "", "Strip this URL prefix from absolute links to make them relative (e.g. https://thomasrones.com)")
+
+	///// Export /////
+	exportJSON := flag.String("exportJSON", "", "Write front matter data for all files to a JSON array at this path")
+	urlStartsAfter := flag.String("urlStartsAfter", "", "Filesystem path prefix to strip when computing link (e.g. /home/user/docs)")
+	exportJSONLinkKey := flag.String("exportJSONLinkKey", "slug", "Front matter key to use as the URL path: slug (default), id, or filename")
+	exportJSONOnMissing := flag.String("exportJSONOnMissing", "skip_file", "Behavior when required fields are missing: skip_file (default) or include_file_add_empty")
 
 	///// Help/Examples /////
 	help := flag.Bool("help", false, "Display help information")
@@ -265,6 +315,7 @@ func main() {
 	checker.RemoveExtraProps = *removeExtraProps
 	checker.ListEmpty = *listEmpty
 	checker.ListEmptyDetails = *listEmptyDetails
+	checker.ListLength = *listLength
 	checker.SortBy = *sortBy
 	checker.GenerateSources = *generateSources
 	checker.Rollup = *rollup
@@ -273,8 +324,28 @@ func main() {
 	checker.LLMFields = *llmFields
 	checker.LLMSkipFresherThan = *llmSkipFresherThan
 	checker.LLMRegenerateIfNewer = *llmRegenerateIfNewer
+	checker.LLMSkipIfContentLinesBelowN = *llmSkipIfContentLinesBelowN
+	checker.LLMSkipIfContentCharsBelowN = *llmSkipIfContentCharsBelowN
 	checker.ApplyLLMTitle = *applyLLMTitle
 	checker.ApplyLLMDescription = *applyLLMDescription
+	checker.PruneFMIfLinesBelowN = *pruneFMIfLinesBelowN
+	checker.PruneFMIfCharsBelowN = *pruneFMIfCharsBelowN
+	checker.PruneFMKeepProps = *pruneFMKeepProps
+	checker.SkipIfContentLinesBelowN = *skipIfContentLinesBelowN
+	checker.SkipIfContentLinesAboveN = *skipIfContentLinesAboveN
+	checker.SkipIfContentCharsBelowN = *skipIfContentCharsBelowN
+	checker.SkipIfContentCharsAboveN = *skipIfContentCharsAboveN
+	checker.SetValueIfContentLinesBelowN = *setValueIfContentLinesBelowN
+	checker.SetValueIfContentLinesAboveN = *setValueIfContentLinesAboveN
+	checker.SetValueIfContentCharsBelowN = *setValueIfContentCharsBelowN
+	checker.SetValueIfContentCharsAboveN = *setValueIfContentCharsAboveN
+	checker.ExportJSON = *exportJSON
+	checker.URLStartsAfter = *urlStartsAfter
+	checker.ExportJSONLinkKey = *exportJSONLinkKey
+	checker.ExportJSONOnMissing = *exportJSONOnMissing
+	checker.ExtractLinks = *extractLinks
+	checker.MakeLinksAbsolute = *makeLinksAbsolute
+	checker.MakeLinksRelative = *makeLinksRelative
 
 	if *files != "" {
 		checker.Files = strings.Split(*files, ",")
@@ -296,6 +367,11 @@ func (fmc *FrontMatterChecker) Run() error {
 	filesToProcess, err := fmc.getFiles()
 	if err != nil {
 		return err
+	}
+
+	if fmc.SkipIfContentLinesBelowN > 0 || fmc.SkipIfContentLinesAboveN > 0 ||
+		fmc.SkipIfContentCharsBelowN > 0 || fmc.SkipIfContentCharsAboveN > 0 {
+		filesToProcess = fmc.filterSparseFiles(filesToProcess)
 	}
 
 	if fmc.PlacementAuditOnly {
@@ -342,6 +418,10 @@ func (fmc *FrontMatterChecker) Run() error {
 		return fmc.removeEmpty(filesToProcess)
 	}
 
+	if fmc.PruneFMIfLinesBelowN > 0 || fmc.PruneFMIfCharsBelowN > 0 {
+		return fmc.pruneSparseFileFM(filesToProcess)
+	}
+
 	if fmc.ListEmpty {
 		return fmc.listEmptyAll(filesToProcess)
 	}
@@ -352,6 +432,26 @@ func (fmc *FrontMatterChecker) Run() error {
 
 	if len(fmc.ListEmptyForKey) > 0 {
 		return fmc.listEmptyForKey(filesToProcess)
+	}
+
+	if fmc.ListLength {
+		return fmc.listLength(filesToProcess)
+	}
+
+	if fmc.ExportJSON != "" {
+		return fmc.runExportJSON(filesToProcess)
+	}
+
+	if fmc.ExtractLinks != "" {
+		return fmc.runExtractLinks(filesToProcess)
+	}
+
+	if fmc.MakeLinksAbsolute != "" {
+		return fmc.runConvertLinks(filesToProcess, fmc.MakeLinksAbsolute, "absolute")
+	}
+
+	if fmc.MakeLinksRelative != "" {
+		return fmc.runConvertLinks(filesToProcess, fmc.MakeLinksRelative, "relative")
 	}
 
 	if fmc.AnalyzeSEO {
@@ -1356,6 +1456,11 @@ func (fmc *FrontMatterChecker) fixFiles(files []string, template map[string]any,
 }
 
 func (fmc *FrontMatterChecker) setValues(files []string) error {
+	if fmc.SetValueIfContentLinesBelowN > 0 || fmc.SetValueIfContentLinesAboveN > 0 ||
+		fmc.SetValueIfContentCharsBelowN > 0 || fmc.SetValueIfContentCharsAboveN > 0 {
+		files = fmc.filterSetValueFiles(files)
+	}
+
 	template := map[string]any{}
 	policies := make([]frontmatter.PropertyPolicy, 0, len(fmc.SetValues))
 
@@ -1817,6 +1922,790 @@ func (fmc *FrontMatterChecker) listEmptyDetails(files []string) error {
 	}
 	tbl.Print()
 	fmt.Printf("\n%d file(s) with empty properties.\n", len(results))
+	return nil
+}
+
+// listLength prints a table of file sizes: total lines/chars and content-only
+// (front-matter excluded) lines/chars. Sortable via -sortBy.
+//
+// Sort keys: name, name:desc, lines, lines:desc, content-lines, content-lines:desc,
+//            chars, chars:desc, content-chars, content-chars:desc
+func (fmc *FrontMatterChecker) listLength(files []string) error {
+	type fileStats struct {
+		path         string
+		totalLines   int
+		contentLines int
+		totalChars   int
+		contentChars int
+	}
+
+	var stats []fileStats
+
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		full := string(raw)
+		body := fmBody(full)
+
+		stats = append(stats, fileStats{
+			path:         displayPath(file, fmc.PathKeep),
+			totalLines:   countLines(full),
+			contentLines: countLines(body),
+			totalChars:   len([]rune(full)),
+			contentChars: len([]rune(body)),
+		})
+	}
+
+	if len(stats) == 0 {
+		fmt.Println("No files.")
+		return nil
+	}
+
+	// Parse sort key and direction from -sortBy (e.g. "lines:desc").
+	sortKey, sortDesc := fmc.SortBy, false
+	if parts := strings.SplitN(fmc.SortBy, ":", 2); len(parts) == 2 {
+		sortKey = parts[0]
+		sortDesc = parts[1] == "desc"
+	}
+	if sortKey == "" {
+		sortKey = "name"
+	}
+
+	sort.Slice(stats, func(i, j int) bool {
+		a, b := stats[i], stats[j]
+		var less bool
+		switch sortKey {
+		case "lines":
+			less = a.totalLines < b.totalLines
+		case "content-lines":
+			less = a.contentLines < b.contentLines
+		case "chars":
+			less = a.totalChars < b.totalChars
+		case "content-chars":
+			less = a.contentChars < b.contentChars
+		default: // "name"
+			less = a.path < b.path
+		}
+		if sortDesc {
+			return !less
+		}
+		return less
+	})
+
+	tbl := NewTable("File", "Lines", "Content Lines", "Chars", "Content Chars")
+	for _, s := range stats {
+		tbl.AddRow(
+			s.path,
+			strconv.Itoa(s.totalLines),
+			strconv.Itoa(s.contentLines),
+			strconv.Itoa(s.totalChars),
+			strconv.Itoa(s.contentChars),
+		)
+	}
+	tbl.Print()
+	fmt.Printf("\n%d file(s)\n", len(stats))
+	return nil
+}
+
+func (fmc *FrontMatterChecker) runExportJSON(files []string) error {
+	// Determine the field set.
+	var fields []string
+	if fmc.TemplateFile != "" {
+		tmpl, err := fmc.loadTemplate()
+		if err != nil {
+			return err
+		}
+		for k := range tmpl {
+			fields = append(fields, k)
+		}
+		sort.Strings(fields)
+	} else {
+		fields = []string{"id", "title"}
+	}
+	// filepath and link are always synthetic — ensure they're not treated as FM keys.
+	fmFields := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f != "filepath" && f != "link" {
+			fmFields = append(fmFields, f)
+		}
+	}
+
+	onMissing := fmc.ExportJSONOnMissing // "skip_file" or "include_file_add_empty"
+	linkKey := fmc.ExportJSONLinkKey     // "slug", "id", or "filename"
+	if linkKey == "" {
+		linkKey = "slug"
+	}
+
+	var rows []map[string]any
+	skipped := 0
+
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		fm, err := frontmatter.GetFrontMatterMap(string(raw))
+		if err != nil {
+			fmt.Printf("warning: could not parse front matter in %s: %v\n", file, err)
+			continue
+		}
+
+		// Check for missing FM fields.
+		var missing []string
+		for _, f := range fmFields {
+			v, ok := fm[f]
+			if !ok || v == nil || v == "" {
+				missing = append(missing, f)
+			}
+		}
+		if len(missing) > 0 {
+			if onMissing == "skip_file" {
+				fmt.Printf("skipping %s — missing field(s): %s\n", file, strings.Join(missing, ", "))
+				skipped++
+				continue
+			}
+			fmt.Printf("warning: %s — missing field(s): %s (adding empty values)\n", file, strings.Join(missing, ", "))
+		}
+
+		row := make(map[string]any, len(fmFields)+2)
+
+		// Populate FM fields.
+		for _, f := range fmFields {
+			v, ok := fm[f]
+			if !ok || v == nil {
+				row[f] = ""
+			} else {
+				row[f] = v
+			}
+		}
+
+		// Synthetic: filepath.
+		row["filepath"] = file
+
+		// Synthetic: link.
+		var link string
+		switch linkKey {
+		case "slug":
+			if s, ok := fm["slug"].(string); ok && s != "" {
+				if strings.HasPrefix(s, "/") {
+					// Absolute slug — use as-is.
+					link = s
+				} else {
+					// Relative slug — resolve against the file's directory.
+					dir := fileToURLPath(filepath.Dir(file), fmc.URLStartsAfter)
+					link = dir + "/" + s
+				}
+			} else {
+				link = fileToURLPath(file, fmc.URLStartsAfter)
+			}
+		case "id":
+			if id, ok := fm["id"].(string); ok && id != "" {
+				link = id
+			} else {
+				fmt.Printf("warning: %s — id field empty, falling back to filename for link\n", file)
+				link = fileToURLPath(file, fmc.URLStartsAfter)
+			}
+		case "filename":
+			link = fileToURLPath(file, fmc.URLStartsAfter)
+		default:
+			link = fileToURLPath(file, fmc.URLStartsAfter)
+		}
+		row["link"] = link
+
+		rows = append(rows, row)
+	}
+
+	out, err := json.MarshalIndent(rows, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	if err := os.WriteFile(fmc.ExportJSON, out, 0644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", fmc.ExportJSON, err)
+	}
+
+	total := len(files)
+	exported := len(rows)
+	fmt.Printf("exported %d / %d file(s) to %s", exported, total, fmc.ExportJSON)
+	if skipped > 0 {
+		fmt.Printf("  (%d skipped — missing required fields)", skipped)
+	}
+	noFM := total - exported - skipped
+	if noFM > 0 {
+		fmt.Printf("  (%d skipped — could not read/parse front matter)", noFM)
+	}
+	fmt.Println()
+	return nil
+}
+
+// linkResult holds a parsed link found in a file body.
+type linkResult struct {
+	text    string
+	url     string
+	lineNum int
+	before  string // text immediately before the link on the same line
+	after   string // text immediately after the link on the same line
+}
+
+// extractLinksFromBody parses [text](url) markdown links from body text.
+// Returns three slices: internal (relative+absolute+anchor), external, images (![...]).
+func extractLinksFromBody(body string) (internal []linkResult, external []linkResult, images []linkResult) {
+	// Separate regex for images (![text](url)) vs links ([text](url)).
+	imgRe := regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
+	linkRe := regexp.MustCompile(`(?:^|[^!])\[([^\]]*)\]\(([^)]+)\)`)
+
+	lines := strings.Split(body, "\n")
+	for lineNum, line := range lines {
+		// Images first.
+		for _, m := range imgRe.FindAllStringIndex(line, -1) {
+			full := line[m[0]:m[1]]
+			sub := imgRe.FindStringSubmatch(full)
+			if sub == nil {
+				continue
+			}
+			url := strings.TrimSpace(sub[2])
+			before, after := contextAround(line, m[0], m[1])
+			images = append(images, linkResult{text: sub[1], url: url, lineNum: lineNum + 1, before: before, after: after})
+		}
+		// Non-image links.
+		for _, m := range linkRe.FindAllStringIndex(line, -1) {
+			full := line[m[0]:m[1]]
+			// Strip leading non-! character that the negative lookahead captured.
+			if len(full) > 0 && full[0] != '[' {
+				full = full[1:]
+				m[0]++
+			}
+			sub := linkRe.FindStringSubmatch(line[m[0]:m[1]])
+			if sub == nil {
+				continue
+			}
+			// Re-find without offset for clean submatch.
+			inner := regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`).FindStringSubmatch(full)
+			if inner == nil {
+				continue
+			}
+			url := strings.TrimSpace(inner[2])
+			before, after := contextAround(line, m[0], m[1])
+			lr := linkResult{text: inner[1], url: url, lineNum: lineNum + 1, before: before, after: after}
+			if isExternalURL(url) {
+				external = append(external, lr)
+			} else {
+				internal = append(internal, lr)
+			}
+		}
+	}
+	return
+}
+
+func isExternalURL(url string) bool {
+	return strings.HasPrefix(url, "http://") ||
+		strings.HasPrefix(url, "https://") ||
+		strings.HasPrefix(url, "ftp://") ||
+		strings.HasPrefix(url, "//")
+}
+
+// contextAround returns up to 40 chars before and after the match within the line.
+func contextAround(line string, start, end int) (before, after string) {
+	const maxCtx = 40
+	b := line[:start]
+	a := line[end:]
+	if len(b) > maxCtx {
+		b = "…" + b[len(b)-maxCtx:]
+	}
+	if len(a) > maxCtx {
+		a = a[:maxCtx] + "…"
+	}
+	return b, a
+}
+
+// categorizeInternal splits internal links into absolute (/...), relative (../ or word),
+// and anchor-only (#...).
+func categorizeInternal(links []linkResult) (absolute, relative, anchor []linkResult) {
+	for _, l := range links {
+		switch {
+		case strings.HasPrefix(l.url, "#"):
+			anchor = append(anchor, l)
+		case strings.HasPrefix(l.url, "/"):
+			absolute = append(absolute, l)
+		default:
+			relative = append(relative, l)
+		}
+	}
+	return
+}
+
+func (fmc *FrontMatterChecker) runExtractLinks(files []string) error {
+	mode := strings.ToLower(fmc.ExtractLinks)
+	switch mode {
+	case "all", "internal", "external", "images":
+	default:
+		return fmt.Errorf("-extractLinks: unknown mode %q — use all, internal, external, or images", mode)
+	}
+
+	type filePlan struct {
+		path    string
+		changes []frontmatter.PropChange
+	}
+	var plans []frontmatter.FileChangePlan
+
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		content := string(raw)
+		body := fmBody(content)
+		fm, _ := frontmatter.GetFrontMatterMap(content)
+		if fm == nil {
+			fm = map[string]any{}
+		}
+
+		internal, external, images := extractLinksFromBody(body)
+		absLinks, relLinks, anchorLinks := categorizeInternal(internal)
+
+		fmt.Printf("\n%s\n", file)
+
+		var changes []frontmatter.PropChange
+
+		if mode == "all" || mode == "internal" {
+			changes = append(changes, printLinkExtractionPreview(fm, "internal_links.absolute", absLinks)...)
+			changes = append(changes, printLinkExtractionPreview(fm, "internal_links.relative", relLinks)...)
+			changes = append(changes, printLinkExtractionPreview(fm, "internal_links.anchor", anchorLinks)...)
+		}
+		if mode == "all" || mode == "external" {
+			changes = append(changes, printLinkExtractionPreview(fm, "external_links", external)...)
+		}
+		if mode == "all" || mode == "images" {
+			changes = append(changes, printLinkExtractionPreview(fm, "image_links", images)...)
+		}
+
+		if len(changes) > 0 {
+			plans = append(plans, frontmatter.FileChangePlan{FilePath: file, Changes: changes})
+		}
+	}
+
+	if len(plans) == 0 {
+		fmt.Println("\nNo changes needed.")
+		return nil
+	}
+
+	fmt.Print("\nApply these changes? [Y/n]: ")
+	var response string
+	fmt.Scanln(&response)
+	if response != "" && strings.ToLower(response) != "y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	for _, plan := range plans {
+		if err := frontmatter.ApplyChangePlan(plan); err != nil {
+			fmt.Printf("error: %s: %v\n", plan.FilePath, err)
+		} else {
+			fmt.Printf("updated: %s\n", plan.FilePath)
+		}
+	}
+	return nil
+}
+
+// printLinkExtractionPreview compares found links against what's already in the FM property,
+// prints a preview of new/removed links, and returns the PropChange to apply.
+func printLinkExtractionPreview(fm map[string]any, prop string, found []linkResult) []frontmatter.PropChange {
+	// Collect found URLs.
+	foundURLs := make([]string, 0, len(found))
+	seen := map[string]bool{}
+	for _, l := range found {
+		if !seen[l.url] {
+			foundURLs = append(foundURLs, l.url)
+			seen[l.url] = true
+		}
+	}
+
+	// Get existing URLs from FM (dotted path).
+	existingAny, _ := frontmatter.NestedGet(fm, strings.Split(prop, "."))
+	existing := frontmatter.ToStringSlice(existingAny)
+	existingSet := map[string]bool{}
+	for _, u := range existing {
+		existingSet[u] = true
+	}
+
+	// New links (print preview with context).
+	for _, l := range found {
+		if existingSet[l.url] {
+			fmt.Printf("  [%s] found existing: %s\n", prop, l.url)
+			continue
+		}
+		fmt.Printf("  [%s] found new (line %d):\n", prop, l.lineNum)
+		fmt.Printf("    %s[%s](%s)%s\n", l.before, l.text, l.url, l.after)
+		fmt.Printf("    → %s\n", l.url)
+	}
+
+	// Stale links (in FM but not found in body).
+	for _, u := range existing {
+		if !seen[u] {
+			fmt.Printf("  [%s] link not found in document, will be removed: %s\n", prop, u)
+		}
+	}
+
+	if len(foundURLs) == 0 && len(existing) == 0 {
+		return nil
+	}
+
+	return []frontmatter.PropChange{
+		{Key: prop, NewValue: stringSliceToAny(foundURLs), OldValue: existingAny},
+	}
+}
+
+func (fmc *FrontMatterChecker) runConvertLinks(files []string, prefix, direction string) error {
+	// Normalise: no trailing slash on prefix.
+	prefix = strings.TrimRight(prefix, "/")
+
+	linkRe := regexp.MustCompile(`(!\[[^\]]*\]|(?:^|[^!])\[[^\]]*\])\(([^)]+)\)`)
+
+	type pendingWrite struct {
+		path    string
+		content string
+	}
+	var pending []pendingWrite
+
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		content := string(raw)
+
+		// Only rewrite the body, leave front matter untouched.
+		fmEnd := fmBodyOffset(content)
+		header := content[:fmEnd]
+		body := content[fmEnd:]
+
+		newBody := linkRe.ReplaceAllStringFunc(body, func(match string) string {
+			sub := linkRe.FindStringSubmatch(match)
+			if sub == nil {
+				return match
+			}
+			prefix0 := sub[1] // [text] or ![text] (possibly with leading char)
+			url := strings.TrimSpace(sub[2])
+
+			var newURL string
+			switch direction {
+			case "absolute":
+				if isExternalURL(url) {
+					return match
+				}
+				if !strings.HasPrefix(url, "/") {
+					return match // relative — leave alone
+				}
+				newURL = prefix + url
+			case "relative":
+				if !strings.HasPrefix(url, prefix+"/") && url != prefix {
+					return match
+				}
+				newURL = strings.TrimPrefix(url, prefix)
+				if newURL == "" {
+					newURL = "/"
+				}
+			}
+
+			return prefix0 + "(" + newURL + ")"
+		})
+
+		if newBody == body {
+			continue
+		}
+
+		pending = append(pending, pendingWrite{path: file, content: header + newBody})
+		fmt.Printf("  %s — links will be converted\n", file)
+	}
+
+	if len(pending) == 0 {
+		fmt.Println("No changes needed.")
+		return nil
+	}
+
+	fmt.Print("\nApply these changes? [Y/n]: ")
+	var response string
+	fmt.Scanln(&response)
+	if response != "" && strings.ToLower(response) != "y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	for _, p := range pending {
+		if err := os.WriteFile(p.path, []byte(p.content), 0644); err != nil {
+			fmt.Printf("error: %s: %v\n", p.path, err)
+		} else {
+			fmt.Printf("updated: %s\n", p.path)
+		}
+	}
+	return nil
+}
+
+// fmBodyOffset returns the byte offset in content where the body begins (after the FM block).
+func fmBodyOffset(content string) int {
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return 0
+	}
+	offset := len(lines[0]) + 1 // include the newline
+	for i := 1; i < len(lines); i++ {
+		offset += len(lines[i]) + 1
+		if strings.TrimSpace(lines[i]) == "---" {
+			return offset
+		}
+	}
+	return 0
+}
+
+// fileToURLPath converts a filesystem path to a URL-style path by stripping
+// the urlStartsAfter prefix and removing the file extension.
+func fileToURLPath(filePath, urlStartsAfter string) string {
+	p := filePath
+	if urlStartsAfter != "" {
+		// Normalize both to slash-separated, then strip.
+		prefix := filepath.ToSlash(urlStartsAfter)
+		slashP := filepath.ToSlash(p)
+		if after, ok := strings.CutPrefix(slashP, prefix); ok {
+			p = after
+		}
+	}
+	// Strip file extension.
+	ext := filepath.Ext(p)
+	p = strings.TrimSuffix(p, ext)
+	// Ensure leading slash.
+	p = filepath.ToSlash(p)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
+}
+
+// fmBody returns the portion of a markdown file after the front matter block.
+// If there is no front matter, the full content is returned.
+func fmBody(content string) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return content
+	}
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			return strings.Join(lines[i+1:], "\n")
+		}
+	}
+	return content // unclosed front matter — treat as no FM
+}
+
+// countLines returns the number of lines in s (minimum 1 for non-empty strings).
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+const sparseBoundary = "======= %s - Not Part of File ======="
+
+// pruneSparseFileFM removes all top-level FM keys (except those in
+// -pruneFMKeepProps) from files whose content is below the line or char
+// thresholds. A preview of the content is shown for each qualifying file
+// before the confirmation prompt.
+// filterSparseFiles removes files whose content (excl. front matter) is below
+// the line or char thresholds set by -skipIfContentLinesBelowN /
+// -skipIfContentCharsBelowN. Skipped files are reported as a summary line.
+// filterSetValueFiles returns only files that meet the setValue content
+// conditions (inclusion filter — opposite polarity from filterSparseFiles).
+// Files that don't meet the condition are silently excluded from setValue.
+func (fmc *FrontMatterChecker) filterSetValueFiles(files []string) []string {
+	var kept []string
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			kept = append(kept, file)
+			continue
+		}
+		body := fmBody(string(raw))
+		lines := countLines(body)
+		chars := len([]rune(body))
+
+		if fmc.SetValueIfContentLinesBelowN > 0 && lines >= fmc.SetValueIfContentLinesBelowN {
+			continue
+		}
+		if fmc.SetValueIfContentLinesAboveN > 0 && lines <= fmc.SetValueIfContentLinesAboveN {
+			continue
+		}
+		if fmc.SetValueIfContentCharsBelowN > 0 && chars >= fmc.SetValueIfContentCharsBelowN {
+			continue
+		}
+		if fmc.SetValueIfContentCharsAboveN > 0 && chars <= fmc.SetValueIfContentCharsAboveN {
+			continue
+		}
+		kept = append(kept, file)
+	}
+	return kept
+}
+
+func (fmc *FrontMatterChecker) filterSparseFiles(files []string) []string {
+	type skippedEntry struct {
+		path   string
+		reason string
+		lines  int
+		chars  int
+	}
+
+	var kept []string
+	var skipped []skippedEntry
+
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			kept = append(kept, file)
+			continue
+		}
+		body := fmBody(string(raw))
+		lines := countLines(body)
+		chars := len([]rune(body))
+
+		var reason string
+		switch {
+		case fmc.SkipIfContentLinesBelowN > 0 && lines < fmc.SkipIfContentLinesBelowN:
+			reason = fmt.Sprintf("lines %d < %d", lines, fmc.SkipIfContentLinesBelowN)
+		case fmc.SkipIfContentLinesAboveN > 0 && lines > fmc.SkipIfContentLinesAboveN:
+			reason = fmt.Sprintf("lines %d > %d", lines, fmc.SkipIfContentLinesAboveN)
+		case fmc.SkipIfContentCharsBelowN > 0 && chars < fmc.SkipIfContentCharsBelowN:
+			reason = fmt.Sprintf("chars %d < %d", chars, fmc.SkipIfContentCharsBelowN)
+		case fmc.SkipIfContentCharsAboveN > 0 && chars > fmc.SkipIfContentCharsAboveN:
+			reason = fmt.Sprintf("chars %d > %d", chars, fmc.SkipIfContentCharsAboveN)
+		}
+
+		if reason != "" {
+			skipped = append(skipped, skippedEntry{
+				path:   displayPath(file, fmc.PathKeep),
+				reason: reason,
+				lines:  lines,
+				chars:  chars,
+			})
+		} else {
+			kept = append(kept, file)
+		}
+	}
+
+	if len(skipped) > 0 {
+		fmt.Printf("Skipping %d sparse file(s):\n\n", len(skipped))
+		tbl := NewTable("File", "Reason", "Lines", "Chars")
+		for _, s := range skipped {
+			tbl.AddRow(s.path, s.reason, strconv.Itoa(s.lines), strconv.Itoa(s.chars))
+		}
+		tbl.Print()
+		fmt.Println()
+	}
+
+	return kept
+}
+
+func (fmc *FrontMatterChecker) pruneSparseFileFM(files []string) error {
+	keepSet := map[string]bool{}
+	for _, k := range csvFields(fmc.PruneFMKeepProps) {
+		keepSet[k] = true
+	}
+
+	type candidate struct {
+		file    string
+		body    string
+		lines   int
+		chars   int
+		fmKeys  []string // keys that will be deleted
+	}
+
+	var candidates []candidate
+
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Printf("warning: could not read %s: %v\n", file, err)
+			continue
+		}
+		content := string(raw)
+		body := fmBody(content)
+		lines := countLines(body)
+		chars := len([]rune(body))
+
+		qualifiesLines := fmc.PruneFMIfLinesBelowN > 0 && lines < fmc.PruneFMIfLinesBelowN
+		qualifiesChars := fmc.PruneFMIfCharsBelowN > 0 && chars < fmc.PruneFMIfCharsBelowN
+		if !qualifiesLines && !qualifiesChars {
+			continue
+		}
+
+		fm, err := frontmatter.GetFrontMatterMap(content)
+		if err != nil || fm == nil {
+			continue
+		}
+
+		var toDelete []string
+		for k := range fm {
+			if !keepSet[k] {
+				toDelete = append(toDelete, k)
+			}
+		}
+		sort.Strings(toDelete)
+
+		if len(toDelete) == 0 {
+			continue
+		}
+
+		candidates = append(candidates, candidate{
+			file:   file,
+			body:   body,
+			lines:  lines,
+			chars:  chars,
+			fmKeys: toDelete,
+		})
+	}
+
+	if len(candidates) == 0 {
+		fmt.Println("No sparse files found.")
+		return nil
+	}
+
+	fmt.Printf("Found %d sparse file(s). Planned FM keys to remove:\n\n", len(candidates))
+
+	for _, c := range candidates {
+		fmt.Printf("  %s  (%d lines, %d chars)\n", displayPath(c.file, fmc.PathKeep), c.lines, c.chars)
+		fmt.Printf("  remove: %s\n\n", strings.Join(c.fmKeys, ", "))
+
+		fmt.Printf(sparseBoundary+"\n", "Start of Content")
+		body := strings.TrimRight(c.body, "\n\t ")
+		if strings.TrimSpace(body) == "" {
+			fmt.Println("  (empty)")
+		} else {
+			fmt.Println(body)
+		}
+		fmt.Printf(sparseBoundary+"\n\n", "End of Content")
+	}
+
+	fmt.Print("Apply these changes? [Y/n]: ")
+	var response string
+	fmt.Scanln(&response)
+	if response != "" && strings.ToLower(response) != "y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	for _, c := range candidates {
+		plan := frontmatter.FileChangePlan{
+			FilePath:     c.file,
+			KeysToDelete: c.fmKeys,
+		}
+		if err := frontmatter.ApplyChangePlan(plan); err != nil {
+			fmt.Printf("error: %s: %v\n", c.file, err)
+		} else {
+			fmt.Printf("updated: %s\n", displayPath(c.file, fmc.PathKeep))
+		}
+	}
 	return nil
 }
 
@@ -2356,7 +3245,12 @@ func (fmc *FrontMatterChecker) generateSourcesLLM(model string, files []string) 
 	today := time.Now().Format("2006-01-02")
 	sourcePrefix := "llm." + model
 
-	var plans []frontmatter.FileChangePlan
+	// Pass 1: apply freshness checks and collect the files that will be sent to the API.
+	type pendingFile struct {
+		path    string
+		content string
+	}
+	var pending []pendingFile
 
 	for _, file := range files {
 		content, err := os.ReadFile(file)
@@ -2367,7 +3261,6 @@ func (fmc *FrontMatterChecker) generateSourcesLLM(model string, files []string) 
 
 		fm, _ := frontmatter.GetFrontMatterMap(string(content))
 
-		// Freshness check: skip if generated recently enough.
 		if fmc.LLMSkipFresherThan > 0 {
 			genDateStr, _ := nestedGetString(fm, "tag_sources.llm."+model+".date_last_generated")
 			if genDateStr != "" {
@@ -2384,16 +3277,80 @@ func (fmc *FrontMatterChecker) generateSourcesLLM(model string, files []string) 
 			}
 		}
 
-		fmt.Printf("generating [%s] for %s ...\n", strings.Join(wantFields, ","), displayPath(file, fmc.PathKeep))
+		// Skip if content is too short (lines or chars).
+		body := fmBody(string(content))
+		if fmc.LLMSkipIfContentLinesBelowN > 0 {
+			if n := countLines(body); n < fmc.LLMSkipIfContentLinesBelowN {
+				fmt.Printf("skipping %s (content has %d line(s), below threshold of %d)\n",
+					displayPath(file, fmc.PathKeep), n, fmc.LLMSkipIfContentLinesBelowN)
+				continue
+			}
+		}
+		if fmc.LLMSkipIfContentCharsBelowN > 0 {
+			if n := len([]rune(body)); n < fmc.LLMSkipIfContentCharsBelowN {
+				fmt.Printf("skipping %s (content has %d char(s), below threshold of %d)\n",
+					displayPath(file, fmc.PathKeep), n, fmc.LLMSkipIfContentCharsBelowN)
+				continue
+			}
+		}
 
-		generated, err := GenerateFields(cfg.OpenAI.APIKey, model, wantFields, string(content))
+		// Skip if a front matter property matches a given value.
+		if len(fmc.LLMSkipIfPropEquals) > 0 {
+			skip := false
+			for _, entry := range fmc.LLMSkipIfPropEquals {
+				parts := strings.SplitN(entry, ":", 2)
+				if len(parts) != 2 {
+					return fmt.Errorf("-llmSkipIfPropEquals %q: expected key:value format", entry)
+				}
+				key, want := parts[0], parts[1]
+				got, _ := nestedGetString(fm, key)
+				if got == want {
+					fmt.Printf("skipping %s (%s=%s)\n", displayPath(file, fmc.PathKeep), key, want)
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
+		}
+
+		pending = append(pending, pendingFile{path: file, content: string(content)})
+	}
+
+	if len(pending) == 0 {
+		fmt.Println("No files to generate.")
+		return nil
+	}
+
+	// Preview: show which files will be sent and prompt for confirmation.
+	fmt.Printf("Will generate [%s] for %d file(s) using %s:\n\n", strings.Join(wantFields, ", "), len(pending), model)
+	for _, p := range pending {
+		fmt.Printf("  %s\n", displayPath(p.path, fmc.PathKeep))
+	}
+	fmt.Println()
+	fmt.Print("Proceed? [Y/n]: ")
+	var response string
+	fmt.Scanln(&response)
+	if response != "" && strings.ToLower(response) != "y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+	fmt.Println()
+
+	// Pass 2: call the API and build change plans.
+	var plans []frontmatter.FileChangePlan
+
+	for _, p := range pending {
+		fmt.Printf("generating %s ...\n", displayPath(p.path, fmc.PathKeep))
+
+		generated, err := GenerateFields(cfg.OpenAI.APIKey, model, wantFields, p.content)
 		if err != nil {
-			fmt.Printf("  error: %v\n", file)
-			fmt.Printf("  %v\n", err)
+			fmt.Printf("  error: %v\n", err)
 			continue
 		}
 
-		plan := frontmatter.FileChangePlan{FilePath: file}
+		plan := frontmatter.FileChangePlan{FilePath: p.path}
 		prefix := func(field, subKey string) string {
 			return field + "_sources." + sourcePrefix + "." + subKey
 		}

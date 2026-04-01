@@ -1,6 +1,5 @@
 ---
-id: "di-001"
-title: "ISO Date"
+id: di-001
 last_update: "2024-05-05"
 ---
 

@@ -30,6 +30,10 @@ func section(out *os.File, title string) {
 	fmt.Fprintf(out, "\n%s\n", title)
 }
 
+func subsection(out *os.File, title string) {
+	fmt.Fprintf(out, "\n  (%s)\n", title)
+}
+
 func printHelp() {
 	out := os.Stderr
 	fmt.Fprintln(out, "Usage: fmc [flags]")
@@ -49,7 +53,7 @@ func printHelp() {
 	printFlag(out, "listEmpty", "")
 	printFlag(out, "listEmptyDetails", "")
 	printFlag(out, "listEmptyForKey", "<propertyName>")
-	printFlag(out, "sortBy", "<name|count>")
+	printFlag(out, "listLength", "")
 	printFlag(out, "checkFormat", "<key:FORMAT>")
 	printFlag(out, "checkType", "<key:type>")
 	printFlag(out, "listValues", "<propertyName>")
@@ -58,10 +62,7 @@ func printHelp() {
 	printFlag(out, "analyze", "")
 	printFlag(out, "analyzeOrder", "")
 	printFlag(out, "analyzeSEO", "")
-	printFlag(out, "plugin", "<docs|blog>")
 	printFlag(out, "inspectProp", "<key>")
-	printFlag(out, "issues-only", "")
-	printFlag(out, "verbose", "")
 
 	section(out, "Make Changes — Single Property:")
 	printFlag(out, "setValue", "<key:source:value[:action]>")
@@ -70,7 +71,6 @@ func printHelp() {
 	printFlag(out, "genID", "")
 	printFlag(out, "genIDOverwriteInvalid", "")
 	printFlag(out, "tryCast", "<key:type>")
-	printFlag(out, "removeEmpty", "<propertyName>")
 
 	section(out, "Make Changes — Multi Property:")
 	printFlag(out, "createFrontMatter", "")
@@ -83,6 +83,10 @@ func printHelp() {
 	printFlag(out, "allProps", "")
 	printFlag(out, "fullConform", "")
 	printFlag(out, "fixOrder", "")
+	printFlag(out, "removeEmpty", "<propertyName>")
+	printFlag(out, "pruneFMIfLinesBelowN", "<N>")
+	printFlag(out, "pruneFMIfCharsBelowN", "<N>")
+	printFlag(out, "pruneFMKeepProps", "<key1,key2>")
 
 	section(out, "Tags & Keywords — Source Generation:")
 	printFlag(out, "generateSources", "<filepath>")
@@ -97,14 +101,46 @@ func printHelp() {
 	printFlag(out, "llmFields", "<title,description,tags,keywords>")
 	printFlag(out, "llmSkipFresherThan", "<N>")
 	printFlag(out, "llmRegenerateIfNewer", "")
+	printFlag(out, "llmSkipIfContentLinesBelowN", "<N>")
+	printFlag(out, "llmSkipIfContentCharsBelowN", "<N>")
+	printFlag(out, "llmSkipIfPropEquals", "<key:value>")
 
 	section(out, "Apply LLM-Generated Values:")
 	printFlag(out, "applyLLMGeneratedTitle", "<llm.gpt-4o[:action]>")
 	printFlag(out, "applyLLMGeneratedDescription", "<llm.gpt-4o[:action]>")
 
-	section(out, "Display Options:")
+	section(out, "Output & Behavior Modifiers:")
+	subsection(out, "all operations — file filtering")
+	printFlag(out, "skipIfContentLinesBelowN", "<N>")
+	printFlag(out, "skipIfContentLinesAboveN", "<N>")
+	printFlag(out, "skipIfContentCharsBelowN", "<N>")
+	printFlag(out, "skipIfContentCharsAboveN", "<N>")
+	subsection(out, "-setValue — apply only to files matching content condition")
+	printFlag(out, "setValueIfContentLinesBelowN", "<N>")
+	printFlag(out, "setValueIfContentLinesAboveN", "<N>")
+	printFlag(out, "setValueIfContentCharsBelowN", "<N>")
+	printFlag(out, "setValueIfContentCharsAboveN", "<N>")
+	subsection(out, "all operations — path display")
 	printFlag(out, "keepNonVariadicPathSegments", "<N>")
 	printFlag(out, "keepNVPS", "<N>")
+	subsection(out, "listEmptyDetails, listLength — sort order")
+	printFlag(out, "sortBy", "<key[:desc]>")
+	subsection(out, "analyze, analyzeOrder — output filtering")
+	printFlag(out, "issues-only", "")
+	printFlag(out, "verbose", "")
+	subsection(out, "analyzeSEO — required companion")
+	printFlag(out, "plugin", "<docs|blog>")
+
+	section(out, "Links:")
+	printFlag(out, "extractLinks", "<all|internal|external|images>")
+	printFlag(out, "makeLinksAbsolute", "<https://example.com>")
+	printFlag(out, "makeLinksRelative", "<https://example.com>")
+
+	section(out, "Export:")
+	printFlag(out, "exportJSON", "<output.json>")
+	printFlag(out, "urlStartsAfter", "<path>")
+	printFlag(out, "exportJSONLinkKey", "<slug|id|filename>")
+	printFlag(out, "exportJSONOnMissing", "<skip_file|include_file_add_empty>")
 
 	section(out, "Other:")
 	printFlag(out, "help", "")
@@ -552,6 +588,8 @@ Examples:
 		fmt.Println("  fmc help analyzeOrder")
 		fmt.Println("  fmc help generateSources")
 		fmt.Println("  fmc help llm")
+		fmt.Println("  fmc help exportJSON")
+		fmt.Println("  fmc help links")
 		fmt.Println()
 		fmt.Println("Run 'fmc commonWorkflows' for common multi-step cleanup sequences.")
 		fmt.Println("Run 'fmc policy help' for policy file format.")
@@ -619,6 +657,157 @@ Examples:
     fmc -rollup tags -rollupSources llm.gpt-4o -rollupNoPreserve -dir ./docs
 
 `)
+	case "links", "extractLinks", "makeLinksAbsolute", "makeLinksRelative":
+		fmt.Print(`Links — Extraction and Conversion
+=================================
+
+fmc can find every [text](url) link in your markdown body, categorise it, and
+write the results back into front matter. It can also bulk-convert links between
+relative and absolute forms.
+
+─── Extraction ────────────────────────────────────────────────────────────────
+
+-extractLinks <mode>
+
+  Scans the body of each file for [text](url) markdown links and writes them
+  into front matter properties. Always overwrites any existing values.
+
+  Modes:
+    all        Extract internal_links, external_links, and image_links
+    internal   Extract internal_links only
+    external   Extract external_links only
+    images     Extract image_links only (![text](url) syntax)
+
+Front matter structure written
+------------------------------
+  internal_links:
+    absolute:   [ /technical/intro, /about ]       # start with /
+    relative:   [ ../sibling, ./child/page ]        # no leading /
+    anchor:     [ #section-heading ]                # same-document anchors
+                                                    # cross-doc anchors go in
+                                                    # relative or absolute
+  external_links: [ https://github.com, ... ]
+  image_links:    [ /img/logo.png, https://cdn/x.png ]
+
+  Links with both a path and an anchor (e.g. /technical/intro#usage) are
+  placed in absolute or relative based on the path prefix, not in anchor.
+
+Preview output
+--------------
+  For each file fmc prints one line per found link:
+
+    New link   — shows up to 40 chars of surrounding context:
+      [internal_links.relative] found new (line 12):
+        See also [related guide](../pandas/loc-guide) for details.
+        → ../pandas/loc-guide
+
+    Existing   — already in front matter, no context printed:
+      [external_links] found existing: https://github.com/foo/bar
+
+    Stale      — in front matter but no longer in the document:
+      [external_links] link not found in document, will be removed: https://old.example.com
+
+Examples:
+  Extract all link types:
+    fmc -extractLinks all -dir ./docs
+
+  Extract only external links from a single file:
+    fmc -extractLinks external -file ./docs/intro.md
+
+  Extract images only:
+    fmc -extractLinks images -dir ./docs
+
+─── Conversion ────────────────────────────────────────────────────────────────
+
+-makeLinksAbsolute <prefix>
+
+  Prepends <prefix> to every internal absolute link (/...) in the file body.
+  Relative links (../, ./), anchors (#), and external links are left alone.
+
+  Example:
+    Before:  [Intro](/technical/intro)
+    Command: fmc -makeLinksAbsolute https://thomasrones.com -dir ./docs
+    After:   [Intro](https://thomasrones.com/technical/intro)
+
+-makeLinksRelative <prefix>
+
+  Strips <prefix> from any link that starts with it, leaving the path portion.
+  Trailing slash on the prefix is ignored. The resulting relative link always
+  starts with /.
+
+  Example:
+    Before:  [Intro](https://thomasrones.com/technical/intro)
+    Command: fmc -makeLinksRelative https://thomasrones.com -dir ./docs
+    After:   [Intro](/technical/intro)
+
+  Both flags operate only on [text](url) syntax — raw URLs in prose and
+  <a href> tags are not touched.
+
+`)
+	case "exportJSON":
+		fmt.Print(`-exportJSON <output.json>
+
+  Exports front matter data for all matched files into a single JSON array.
+  Each element contains the front matter fields plus two synthetic fields:
+  filepath (the file's path on disk) and link (its URL path).
+
+Field set
+---------
+  No template (-t)   →  id, title, filepath, link
+  With -t             →  all keys in the template + filepath + link
+
+  Note: filepath and link are always synthetic — they are never read from
+  front matter, even if those keys exist in the template.
+
+Flags
+-----
+  -exportJSON <path>
+    Output file path. Overwritten without warning if it already exists.
+
+  -urlStartsAfter <segment>
+    Filesystem prefix to strip when computing the link URL. Everything up to
+    and including this segment is removed, leaving its children as the URL path.
+
+    Example: -urlStartsAfter /home/user/repo/docs
+      /home/user/repo/docs/technical/intro.md  →  /technical/intro
+
+  -exportJSONLinkKey <slug|id|filename>   (default: slug)
+    Which value to use as the URL path segment:
+
+    slug      Use the slug front matter field. If slug is a relative value
+              (no leading /), it is resolved against the file's directory.
+              Falls back to filename if slug is absent.
+    id        Use the id field. Falls back to filename if absent.
+    filename  Always derive from the file path (ignores slug/id).
+
+  -exportJSONOnMissing <skip_file|include_file_add_empty>   (default: skip_file)
+    What to do when a file is missing one or more required fields:
+
+    skip_file              Exclude the file from the output. Prints a warning
+                           to the console for each skipped file.
+    include_file_add_empty Include the file, filling missing fields with "".
+                           Prints a warning for each affected file.
+
+Examples
+--------
+  Minimal export (id + title + link) from a directory:
+    fmc -exportJSON out.json -dir ./docs
+
+  Full export using template fields, with URL prefix stripped:
+    fmc -exportJSON out.json -t template.json \
+        -dir ./docs \
+        -urlStartsAfter /home/user/repo/docs
+
+  Include files even when fields are missing (add empty strings):
+    fmc -exportJSON out.json -dir ./docs \
+        -exportJSONOnMissing include_file_add_empty
+
+  Use filename instead of slug for the link field:
+    fmc -exportJSON out.json -dir ./docs \
+        -exportJSONLinkKey filename \
+        -urlStartsAfter /home/user/repo/docs
+
+`)
 	default:
 		fmt.Printf("no help topic %q\n\n", topic)
 		fmt.Println("Run 'fmc help list' to see all available help topics.")
@@ -644,6 +833,16 @@ var workflows = []workflowEntry{
 		name:        "llmGenerate",
 		description: "Generate and apply LLM-suggested title, description, tags, and keywords",
 		run:         workflowLLMGenerate,
+	},
+	{
+		name:        "addFrontMatter",
+		description: "Find files missing front matter and add it with useful defaults",
+		run:         workflowAddFrontMatter,
+	},
+	{
+		name:        "fixNesting",
+		description: "Fix an accidentally over-nested property by collapsing an unwanted intermediate level",
+		run:         workflowFixNesting,
 	},
 }
 
@@ -703,6 +902,120 @@ Step 2b — Remove ALL empty keys across every file:
   Use the per-file breakdown first if you want to review before bulk-deleting:
 
   fmc -listEmptyDetails -sortBy name -dir ./docs
+
+`)
+}
+
+func workflowFixNesting() {
+	fmt.Print(`Workflow: fixNesting — Collapse an accidentally over-nested property
+====================================================================
+
+Problem
+-------
+A property ended up with an extra intermediate level that shouldn't be there.
+For example, instead of:
+
+  last_update:
+    date: 20250618
+
+the file contains:
+
+  last_update:
+    date:
+      date: 20250618
+
+The value is buried one level too deep and needs to be lifted up.
+
+How it works
+------------
+-setValue with transform:copy reads from a dotted source path and writes to a
+dotted destination path. Setting a dotted key to a scalar value replaces any
+existing nested map at that key — so writing to last_update.date overwrites
+the entire {date: 20250618} map in one step. No separate delete step needed.
+
+Step 1 — Confirm the over-nesting:
+
+  fmc -inspectProp last_update -dir ./docs
+
+  Look for depth > expected and extra sub-keys like "date.date".
+
+Step 2 — Lift the value up one level:
+
+  Replace the specific paths with your actual property names.
+  The pattern is always:  destination:transform:copy:source:always
+
+  fmc -setValue "last_update.date:transform:copy:last_update.date.date:always" \
+      -dir ./docs
+
+  fmc shows a preview of every planned change before writing. Confirm you
+  see the value moving from the deep path to the shallow path.
+
+Step 3 — Verify the fix:
+
+  fmc -inspectProp last_update -dir ./docs
+
+  Depth should now be back to expected, and the extra sub-key should be gone.
+
+Generalizing the pattern
+------------------------
+The same approach works for any over-nesting. Adapt the paths:
+
+  Over-nested:  a.b.b: value   →   want: a.b: value
+  Command:      -setValue "a.b:transform:copy:a.b.b:always"
+
+  Over-nested:  meta.date.date.date: value   →   want: meta.date: value
+  Command:      -setValue "meta.date:transform:copy:meta.date.date.date:always"
+
+`)
+}
+
+func workflowAddFrontMatter() {
+	fmt.Print(`Workflow: addFrontMatter — Find files missing front matter and add it
+=====================================================================
+
+Step 1 — Find files that have no front matter at all:
+
+  fmc -analyze -dir ./docs
+
+  Look for files reported as "no front matter". You can also grep directly:
+
+    grep -rL "^---" ./docs
+
+Step 2 — Add front matter to those files:
+
+  At minimum, pass a template so fmc knows which keys to write:
+
+    fmc -t template.json -createFrontMatter -dir ./docs
+
+  Use -fmDefault to pre-fill useful fields instead of leaving them blank.
+  Good candidates for auto-population:
+
+    fmc -t template.json -createFrontMatter \
+        -fmDefault "draft:true" \
+        -dir ./docs
+
+  Note: -fmDefault applies the same value to every file. For per-file computed
+  values like unique UUIDs and today's date, run -genID and -setValue after:
+
+    fmc -genID -dir ./docs
+    fmc -setValue "last_update.date:computed:today:if_empty" -dir ./docs
+
+Step 3 — Verify the result:
+
+  fmc -analyze -dir ./docs
+
+  All files should now show front matter present. Re-run with -issues-only
+  to focus on anything still missing:
+
+    fmc -t template.json -analyze -issues-only -dir ./docs
+
+Bonus — Populate content fields with LLM suggestions:
+
+  If you have an OpenAI API key configured in ~/.fmc/config.json, you can
+  automatically generate title, description, tags, and keywords for the new
+  files. Run the llmGenerate workflow for the full guide:
+
+    fmc commonWorkflows llmGenerate
 
 `)
 }
