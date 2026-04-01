@@ -30,7 +30,7 @@ type Config struct {
 
 type FrontMatterChecker struct {
 	TemplateFile       string
-	Dir                string
+	Dirs               repeatableFlag // one or more directories to scan
 	Files              []string
 	ConfigFile         string
 	PolicyFile         string
@@ -100,6 +100,7 @@ type FrontMatterChecker struct {
 	URLStartsAfter        string // strip this path prefix when computing link
 	ExportJSONLinkKey     string // "slug", "id", or "filename" (default: "slug")
 	ExportJSONOnMissing   string // "skip_file" or "include_file_add_empty" (default: "skip_file")
+	ExportJSONFields      string // CSV of fields to include; overrides template and default set
 
 	ExtractLinks        string // "all", "internal", "external", or "images"
 	MakeLinksAbsolute   string // URL prefix to prepend to relative/absolute internal links
@@ -140,7 +141,7 @@ func main() {
 	// flag.StringVar(&checker.PolicyFile, "p", "", "Alias for -policy")
 
 	////// Dir/files to operate on /////
-	flag.StringVar(&checker.Dir, "dir", "", "Directory containing markdown files")
+	flag.Var(&checker.Dirs, "dir", "Directory to scan for markdown files (repeatable)")
 	files := flag.String("files", "", "Comma-separated list of files to analyze/fix")
 
 	////// List/analyze - Do not rewrite front matter /////
@@ -232,6 +233,7 @@ func main() {
 	urlStartsAfter := flag.String("urlStartsAfter", "", "Filesystem path prefix to strip when computing link (e.g. /home/user/docs)")
 	exportJSONLinkKey := flag.String("exportJSONLinkKey", "slug", "Front matter key to use as the URL path: slug (default), id, or filename")
 	exportJSONOnMissing := flag.String("exportJSONOnMissing", "skip_file", "Behavior when required fields are missing: skip_file (default) or include_file_add_empty")
+	exportJSONFields := flag.String("exportJSONFields", "", "CSV of front matter fields to include in export (overrides template and default set)")
 
 	///// Help/Examples /////
 	help := flag.Bool("help", false, "Display help information")
@@ -343,6 +345,7 @@ func main() {
 	checker.URLStartsAfter = *urlStartsAfter
 	checker.ExportJSONLinkKey = *exportJSONLinkKey
 	checker.ExportJSONOnMissing = *exportJSONOnMissing
+	checker.ExportJSONFields = *exportJSONFields
 	checker.ExtractLinks = *extractLinks
 	checker.MakeLinksAbsolute = *makeLinksAbsolute
 	checker.MakeLinksRelative = *makeLinksRelative
@@ -1282,8 +1285,8 @@ func (fmc *FrontMatterChecker) loadConfig() error {
 func (fmc *FrontMatterChecker) getFiles() ([]string, error) {
 	var files []string
 
-	if fmc.Dir != "" {
-		err := filepath.Walk(fmc.Dir, func(path string, info os.FileInfo, err error) error {
+	for _, dir := range fmc.Dirs {
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
@@ -1293,7 +1296,7 @@ func (fmc *FrontMatterChecker) getFiles() ([]string, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to traverse directory: %v", err)
+			return nil, fmt.Errorf("failed to traverse directory %s: %v", dir, err)
 		}
 	}
 
@@ -1577,7 +1580,7 @@ func (fmc *FrontMatterChecker) createFrontMatter(files []string, template map[st
 	if len(blankKeys) > 0 {
 		fmt.Printf("Note: %d key(s) have no -fmDefault and will be added blank: %s\n",
 			len(blankKeys), strings.Join(blankKeys, ", "))
-		suggestions := buildPostCreateSuggestions(blankKeys, fmc.Dir, fmc.Files)
+		suggestions := buildPostCreateSuggestions(blankKeys, strings.Join(fmc.Dirs, ","), fmc.Files)
 		if len(suggestions) > 0 {
 			fmt.Println("  After creation, consider running:")
 			for _, s := range suggestions {
@@ -2013,7 +2016,10 @@ func (fmc *FrontMatterChecker) listLength(files []string) error {
 func (fmc *FrontMatterChecker) runExportJSON(files []string) error {
 	// Determine the field set.
 	var fields []string
-	if fmc.TemplateFile != "" {
+	switch {
+	case fmc.ExportJSONFields != "":
+		fields = csvFields(fmc.ExportJSONFields)
+	case fmc.TemplateFile != "":
 		tmpl, err := fmc.loadTemplate()
 		if err != nil {
 			return err
@@ -2022,7 +2028,7 @@ func (fmc *FrontMatterChecker) runExportJSON(files []string) error {
 			fields = append(fields, k)
 		}
 		sort.Strings(fields)
-	} else {
+	default:
 		fields = []string{"id", "title"}
 	}
 	// filepath and link are always synthetic — ensure they're not treated as FM keys.

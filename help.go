@@ -140,6 +140,7 @@ func printHelp() {
 	printFlag(out, "exportJSON", "<output.json>")
 	printFlag(out, "urlStartsAfter", "<path>")
 	printFlag(out, "exportJSONLinkKey", "<slug|id|filename>")
+	printFlag(out, "exportJSONFields", "<id,title,tags,...>")
 	printFlag(out, "exportJSONOnMissing", "<skip_file|include_file_add_empty>")
 
 	section(out, "Other:")
@@ -780,6 +781,11 @@ Flags
     id        Use the id field. Falls back to filename if absent.
     filename  Always derive from the file path (ignores slug/id).
 
+  -exportJSONFields <csv>   (optional)
+    Explicit comma-separated list of front matter fields to include.
+    Takes priority over -t and the built-in default (id, title).
+    Example: -exportJSONFields "id,title,tags,keywords"
+
   -exportJSONOnMissing <skip_file|include_file_add_empty>   (default: skip_file)
     What to do when a file is missing one or more required fields:
 
@@ -790,8 +796,15 @@ Flags
 
 Examples
 --------
-  Minimal export (id + title + link) from a directory:
+  Minimal export (id + title + link) from a single directory:
     fmc -exportJSON out.json -dir ./docs
+
+  Build an index across multiple subdirectories (pass -dir once per dir):
+    fmc -exportJSON site-index.json \
+        -dir ./technical \
+        -dir ./blog \
+        -dir ./about \
+        -urlStartsAfter /home/user/repo/docs
 
   Full export using template fields, with URL prefix stripped:
     fmc -exportJSON out.json -t template.json \
