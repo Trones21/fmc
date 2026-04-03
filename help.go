@@ -141,6 +141,7 @@ func printHelp() {
 	printFlag(out, "urlStartsAfter", "<path>")
 	printFlag(out, "exportJSONLinkKey", "<slug|slug_strict|id|filename>")
 	printFlag(out, "exportJSONFields", "<id,title,tags,...>")
+	printFlag(out, "exportJSONContentLength", "")
 	printFlag(out, "exportJSONOnMissing", "<skip_file|include_file_add_empty>")
 
 	section(out, "Other:")
@@ -787,6 +788,10 @@ Flags
     Explicit comma-separated list of front matter fields to include.
     Takes priority over -t and the built-in default (id, title).
     Example: -exportJSONFields "id,title,tags,keywords"
+
+  -exportJSONContentLength
+    Add content_lines and content_chars to each row. Both exclude front matter.
+    Useful for filtering stub files downstream.
 
   -exportJSONOnMissing <skip_file|include_file_add_empty>   (default: skip_file)
     What to do when a file is missing one or more required fields:

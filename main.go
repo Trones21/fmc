@@ -100,7 +100,8 @@ type FrontMatterChecker struct {
 	URLStartsAfter        string // strip this path prefix when computing link
 	ExportJSONLinkKey     string // "slug", "id", or "filename" (default: "slug")
 	ExportJSONOnMissing   string // "skip_file" or "include_file_add_empty" (default: "skip_file")
-	ExportJSONFields      string // CSV of fields to include; overrides template and default set
+	ExportJSONFields        string // CSV of fields to include; overrides template and default set
+	ExportJSONContentLength bool   // include content_lines and content_chars (excl. front matter)
 
 	ExtractLinks        string // "all", "internal", "external", or "images"
 	MakeLinksAbsolute   string // URL prefix to prepend to relative/absolute internal links
@@ -234,6 +235,7 @@ func main() {
 	exportJSONLinkKey := flag.String("exportJSONLinkKey", "slug", "Front matter key to use as the URL path: slug (default), slug_strict (empty if no slug), id, or filename")
 	exportJSONOnMissing := flag.String("exportJSONOnMissing", "skip_file", "Behavior when required fields are missing: skip_file (default) or include_file_add_empty")
 	exportJSONFields := flag.String("exportJSONFields", "", "CSV of front matter fields to include in export (overrides template and default set)")
+	exportJSONContentLength := flag.Bool("exportJSONContentLength", false, "Include content_lines and content_chars (excluding front matter) in each export row")
 
 	///// Help/Examples /////
 	help := flag.Bool("help", false, "Display help information")
@@ -346,6 +348,7 @@ func main() {
 	checker.ExportJSONLinkKey = *exportJSONLinkKey
 	checker.ExportJSONOnMissing = *exportJSONOnMissing
 	checker.ExportJSONFields = *exportJSONFields
+	checker.ExportJSONContentLength = *exportJSONContentLength
 	checker.ExtractLinks = *extractLinks
 	checker.MakeLinksAbsolute = *makeLinksAbsolute
 	checker.MakeLinksRelative = *makeLinksRelative
@@ -2091,6 +2094,13 @@ func (fmc *FrontMatterChecker) runExportJSON(files []string) error {
 
 		// Synthetic: filepath.
 		row["filepath"] = file
+
+		// Synthetic: content length.
+		if fmc.ExportJSONContentLength {
+			body := fmBody(string(raw))
+			row["content_lines"] = countLines(body)
+			row["content_chars"] = len([]rune(body))
+		}
 
 		// Synthetic: link.
 		var link string
