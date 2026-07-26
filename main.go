@@ -87,6 +87,9 @@ type FrontMatterChecker struct {
 	PruneFMIfLinesBelowN        int            // strip all FM (except kept props) if content < N lines
 	PruneFMIfCharsBelowN        int            // strip all FM (except kept props) if content < N chars
 	PruneFMKeepProps            string         // CSV of top-level FM keys to keep when pruning
+	SelectBy                    repeatableFlag // each entry: "key:op:value" — include only matching files
+	SelectByMode                string         // "all" (default) or "any" — how multiple -selectBy combine
+	SelectByOnMissing           string         // "exclude" (default) or "include" — files lacking the key
 	SkipIfContentLinesBelowN    int            // exclude files from all operations if content < N lines
 	SkipIfContentLinesAboveN    int            // exclude files from all operations if content > N lines
 	SkipIfContentCharsBelowN    int            // exclude files from all operations if content < N chars
@@ -184,6 +187,9 @@ func main() {
 	pruneFMIfLinesBelowN := flag.Int("pruneFMIfLinesBelowN", 0, "Strip all FM (except -pruneFMKeepProps) for files whose content has fewer than N lines (0 = disabled)")
 	pruneFMIfCharsBelowN := flag.Int("pruneFMIfCharsBelowN", 0, "Strip all FM (except -pruneFMKeepProps) for files whose content has fewer than N characters (0 = disabled)")
 	pruneFMKeepProps := flag.String("pruneFMKeepProps", "", "CSV of top-level FM keys to preserve when pruning (e.g. id,title)")
+	flag.Var(&checker.SelectBy, "selectBy", "Operate only on files whose front matter matches: <key:op:value> (repeatable, e.g. date:gte:2024-01-01)")
+	selectByMode := flag.String("selectByMode", "all", "How multiple -selectBy conditions combine: all (default) or any")
+	selectByOnMissing := flag.String("selectByOnMissing", "exclude", "Files where the -selectBy key is absent: exclude (default) or include")
 	skipIfContentLinesBelowN := flag.Int("skipIfContentLinesBelowN", 0, "Exclude files from all operations if content has fewer than N lines (0 = disabled)")
 	skipIfContentLinesAboveN := flag.Int("skipIfContentLinesAboveN", 0, "Exclude files from all operations if content has more than N lines (0 = disabled)")
 	skipIfContentCharsBelowN := flag.Int("skipIfContentCharsBelowN", 0, "Exclude files from all operations if content has fewer than N characters (0 = disabled)")
@@ -335,6 +341,8 @@ func main() {
 	checker.PruneFMIfLinesBelowN = *pruneFMIfLinesBelowN
 	checker.PruneFMIfCharsBelowN = *pruneFMIfCharsBelowN
 	checker.PruneFMKeepProps = *pruneFMKeepProps
+	checker.SelectByMode = *selectByMode
+	checker.SelectByOnMissing = *selectByOnMissing
 	checker.SkipIfContentLinesBelowN = *skipIfContentLinesBelowN
 	checker.SkipIfContentLinesAboveN = *skipIfContentLinesAboveN
 	checker.SkipIfContentCharsBelowN = *skipIfContentCharsBelowN
@@ -373,6 +381,16 @@ func (fmc *FrontMatterChecker) Run() error {
 	filesToProcess, err := fmc.getFiles()
 	if err != nil {
 		return err
+	}
+
+	if len(fmc.SelectBy) > 0 {
+		filesToProcess, err = fmc.filterSelectedFiles(filesToProcess)
+		if err != nil {
+			return err
+		}
+		if len(filesToProcess) == 0 {
+			return fmt.Errorf("no files matched the -selectBy condition(s)")
+		}
 	}
 
 	if fmc.SkipIfContentLinesBelowN > 0 || fmc.SkipIfContentLinesAboveN > 0 ||

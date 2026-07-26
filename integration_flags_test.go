@@ -111,6 +111,124 @@ func TestKeepNVPS(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// -selectBy file selection
+// ---------------------------------------------------------------------------
+
+// selectByFixtures writes four files covering the cases -selectBy has to
+// handle: an unquoted YAML date (decoded as a timestamp), a quoted date
+// string, no date at all, and an RFC3339 timestamp.
+func selectByFixtures(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"a.md": "---\nid: a\nlast_update:\n  date: 2024-06-15\ntags: [golang, tutorial]\ndraft: false\n---\nBody a.\n",
+		"b.md": "---\nid: b\nlast_update:\n  date: \"2023-01-05\"\ntags: [python]\ndraft: true\n---\nBody b.\n",
+		"c.md": "---\nid: c\ntags: [golang]\n---\nBody c, no date.\n",
+		"d.md": "---\nid: d\nlast_update:\n  date: 2025-03-01T10:30:00Z\ndraft: false\n---\nBody d.\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestSelectByDateGTE(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmc(t, "-dir", dir, "-selectBy", "last_update.date:gte:2024-01-01", "-listValues", "id")
+	assertContains(t, output, "2 of 4 file(s) matched")
+	// Match the -listValues rows, not incidental letters in the summary text.
+	assertContains(t, output, "\n  a ")
+	assertContains(t, output, "\n  d ")
+	assertNotContains(t, output, "\n  b ")
+}
+
+func TestSelectBySymbolicOperator(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmc(t, "-dir", dir, "-selectBy", "last_update.date:>=:2024-01-01", "-listValues", "id")
+	assertContains(t, output, "2 of 4 file(s) matched")
+}
+
+func TestSelectByDateWindow(t *testing.T) {
+	// Two conditions on the same key bound a range; only a.md is in 2024.
+	dir := selectByFixtures(t)
+	output := runFmc(t, "-dir", dir,
+		"-selectBy", "last_update.date:gte:2024-01-01",
+		"-selectBy", "last_update.date:lt:2025-01-01",
+		"-listValues", "id")
+	assertContains(t, output, "1 of 4 file(s) matched")
+	assertContains(t, output, "\n  a ")
+}
+
+func TestSelectByModeAny(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmc(t, "-dir", dir,
+		"-selectBy", "draft:eq:true",
+		"-selectBy", "tags:contains:golang",
+		"-selectByMode", "any",
+		"-listValues", "id")
+	assertContains(t, output, "3 of 4 file(s) matched")
+}
+
+func TestSelectByMissingKeyExcludedByDefault(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmc(t, "-dir", dir, "-selectBy", "last_update.date:gte:2020-01-01", "-listValues", "id")
+	assertContains(t, output, "3 of 4 file(s) matched")
+	assertNotContains(t, output, "\n  c ")
+}
+
+func TestSelectByOnMissingInclude(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmc(t, "-dir", dir,
+		"-selectBy", "last_update.date:gte:2024-01-01",
+		"-selectByOnMissing", "include",
+		"-listValues", "id")
+	assertContains(t, output, "3 of 4 file(s) matched")
+}
+
+func TestSelectByMissingOperator(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmc(t, "-dir", dir, "-selectBy", "last_update.date:missing", "-listValues", "id")
+	assertContains(t, output, "1 of 4 file(s) matched")
+	assertContains(t, output, "\n  c ")
+}
+
+func TestSelectByVerboseListsExclusions(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmc(t, "-dir", dir, "-selectBy", "last_update.date:gte:2024-01-01", "-verbose", "-listValues", "id")
+	assertContains(t, output, "Excluded File")
+	assertContains(t, output, "b.md")
+	assertContains(t, output, "fails gte 2024-01-01")
+	assertContains(t, output, "c.md")
+	assertContains(t, output, "last_update.date missing")
+}
+
+func TestSelectByGatesMutations(t *testing.T) {
+	// -selectBy runs before the operation, so only matching files are written.
+	dir := selectByFixtures(t)
+	runFmc(t, "-dir", dir,
+		"-selectBy", "draft:eq:false",
+		"-setValue", "status:static:published:always")
+	assertContains(t, readFile(t, filepath.Join(dir, "a.md")), "status: published")
+	assertContains(t, readFile(t, filepath.Join(dir, "d.md")), "status: published")
+	assertNotContains(t, readFile(t, filepath.Join(dir, "b.md")), "status")
+	assertNotContains(t, readFile(t, filepath.Join(dir, "c.md")), "status")
+}
+
+func TestSelectByInvalidOperator(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmcExpectFail(t, "-dir", dir, "-selectBy", "date:like:x", "-listValues", "id")
+	assertContains(t, output, "unknown operator")
+}
+
+func TestSelectByNoMatches(t *testing.T) {
+	dir := selectByFixtures(t)
+	output := runFmcExpectFail(t, "-dir", dir, "-selectBy", "last_update.date:gte:2099-01-01", "-listValues", "id")
+	assertContains(t, output, "no files matched")
+}
+
+// ---------------------------------------------------------------------------
 // Mutation flags (each test copies fixtures into a temp dir)
 // ---------------------------------------------------------------------------
 

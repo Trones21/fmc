@@ -45,6 +45,9 @@ func printHelp() {
 	section(out, "Files to Operate On:")
 	printFlag(out, "dir", "<path>")
 	printFlag(out, "files", "<file1,file2>")
+	printFlag(out, "selectBy", "<key:op:value>")
+	printFlag(out, "selectByMode", "<all|any>")
+	printFlag(out, "selectByOnMissing", "<exclude|include>")
 
 	section(out, "List / Analyze  (read-only, no writes):")
 	printFlag(out, "placementAudit", "")
@@ -110,7 +113,11 @@ func printHelp() {
 	printFlag(out, "applyLLMGeneratedDescription", "<llm.gpt-4o[:action]>")
 
 	section(out, "Output & Behavior Modifiers:")
-	subsection(out, "all operations — file filtering")
+	subsection(out, "all operations — front matter value filtering")
+	printFlag(out, "selectBy", "<key:op:value>")
+	printFlag(out, "selectByMode", "<all|any>")
+	printFlag(out, "selectByOnMissing", "<exclude|include>")
+	subsection(out, "all operations — content length filtering")
 	printFlag(out, "skipIfContentLinesBelowN", "<N>")
 	printFlag(out, "skipIfContentLinesAboveN", "<N>")
 	printFlag(out, "skipIfContentCharsBelowN", "<N>")
@@ -174,6 +181,12 @@ func printExamples() {
   List files where a specific property is empty:
     fmc -listEmptyForKey description -dir ./docs
 
+  Operate only on files updated on or after a date:
+    fmc -dir ./docs -selectBy "last_update.date:gte:2024-01-01" -listLength
+
+  Combine a date window with another condition (all must match):
+    fmc -dir ./docs -selectBy "last_update.date:gte:2024-01-01" -selectBy "draft:eq:false" -analyze
+
   Check a date property conforms to a format:
     fmc -checkFormat "last_update.date:YYYYMMDD" -dir ./docs
 
@@ -212,6 +225,7 @@ func printExamples() {
     fmc policy list-functions
 
   Flag-specific help:
+    fmc help selectBy
     fmc help setValue
     fmc help addMissingProps
     fmc help removeExtraProps
@@ -228,6 +242,83 @@ func printExamples() {
 
 func runHelpTopic(topic string) {
 	switch topic {
+	case "selectBy", "selectByMode", "selectByOnMissing":
+		fmt.Print(`-selectBy key:op:value  (repeatable)
+
+  Narrows the file set to those whose front matter matches a condition. This
+  runs before every other operation, so it composes with anything: -analyze,
+  -listValues, -setValue, -exportJSON, LLM generation, and so on.
+
+  -dir / -files decide which files are considered; -selectBy decides which of
+  those are actually operated on.
+
+  The key uses dot notation for nested properties (last_update.date). The value
+  is everything after the second colon, so values containing ':' (RFC3339
+  timestamps, URLs) need no escaping.
+
+Operators:
+  eq   =   ==     equal
+  ne   !=         not equal
+  gt   >          greater than
+  gte  >=         greater than or equal
+  lt   <          less than
+  lte  <=         less than or equal
+  contains        list membership (for YAML lists) or substring (for scalars)
+  exists          the key is present  (no value)
+  missing         the key is absent   (no value)
+
+Comparison rules:
+  Both sides are compared as dates if both parse as a date, as numbers if both
+  parse as numbers, and as strings otherwise. Recognized date formats:
+  YYYY-MM-DD, YYYY/MM/DD, YYYYMMDD, DD-MM-YYYY, DD/MM/YYYY, MM/DD/YYYY, and
+  RFC3339. A YAML date value that was parsed into a timestamp is normalized
+  back to YYYY-MM-DD (or RFC3339 when it has a time component) before
+  comparison.
+
+  Files where the key is absent are excluded by default — the property must be
+  present to be considered a match. Use -selectByOnMissing include to treat a
+  missing key as passing instead. (The exists / missing operators are unaffected
+  by this setting.)
+
+-selectByMode all|any
+
+  How multiple -selectBy conditions combine. Default is all (every condition
+  must match). Use any for an OR.
+
+-selectByOnMissing exclude|include
+
+  What to do with files that don't have the key at all. Default is exclude.
+
+Reporting:
+  A summary line always shows how many files matched. Add -verbose for a table
+  of the excluded files and the reason each one failed.
+
+Examples:
+  Everything updated on or after 2024-01-01 (the common case):
+    fmc -dir ./docs -selectBy "last_update.date:gte:2024-01-01" -listLength
+
+  A date window — updated during 2024:
+    fmc -dir ./docs -selectBy "last_update.date:gte:2024-01-01" -selectBy "last_update.date:lt:2025-01-01" -analyze
+
+  Export only recently-updated posts:
+    fmc -dir ./blog -selectBy "date:gt:2024-06-01" -exportJSON recent.json -urlStartsAfter /home/user/blog
+
+  Stamp last_update only on files that are not drafts:
+    fmc -dir ./docs -selectBy "draft:eq:false" -setValue "last_update:computed:today:always"
+
+  Files that have a tag:
+    fmc -dir ./docs -selectBy "tags:contains:golang" -listValues title
+
+  Files missing a required property:
+    fmc -dir ./docs -selectBy "description:missing" -listLength
+
+  Either condition is enough (OR):
+    fmc -dir ./docs -selectBy "draft:eq:true" -selectBy "status:eq:wip" -selectByMode any -analyze
+
+  See exactly what was filtered out and why:
+    fmc -dir ./docs -selectBy "date:gte:2024-01-01" -verbose -analyze
+
+`)
 	case "createFrom":
 		fmt.Print(`-createFrom from:to[:action][:transform:fn]
 
@@ -577,6 +668,7 @@ Examples:
 `)
 	case "list":
 		fmt.Println("Available help topics:")
+		fmt.Println("  fmc help selectBy")
 		fmt.Println("  fmc help setValue")
 		fmt.Println("  fmc help addMissingProps")
 		fmt.Println("  fmc help removeExtraProps")

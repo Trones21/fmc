@@ -1,4 +1,4 @@
-# fmc — Front Matter Checker
+# fmc — Front Matter CLI
 
 A CLI tool for auditing and fixing YAML front matter in markdown files.
 
@@ -127,6 +127,36 @@ Supported OpenAI models: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-3.5-turbo`
 |---|---|
 | `-dir <path>` | Directory to walk for `.md` files |
 | `-files <a,b>` | Comma-separated list of specific files |
+
+`-dir` / `-files` decide which files are *considered*. `-selectBy` narrows that
+set down to the files actually operated on, based on front matter values.
+
+| Flag | Description |
+|---|---|
+| `-selectBy <key:op:value>` | Operate only on files whose front matter matches (repeatable) |
+| `-selectByMode <all\|any>` | How multiple `-selectBy` conditions combine (default `all`) |
+| `-selectByOnMissing <exclude\|include>` | Files where the key is absent (default `exclude`) |
+
+Operators: `eq` `=`, `ne` `!=`, `gt` `>`, `gte` `>=`, `lt` `<`, `lte` `<=`,
+`contains` (list membership or substring), `exists`, `missing`.
+
+Operands are compared as dates if both parse as a date, as numbers if both
+parse as numbers, and as strings otherwise. The key supports dot notation for
+nested properties, and the value is everything after the second colon, so
+RFC3339 timestamps need no escaping.
+
+```bash
+# Only files updated on or after a date
+fmc -dir ./docs -selectBy "last_update.date:gte:2024-01-01" -listLength
+
+# A date window, plus -verbose to see what was filtered out and why
+fmc -dir ./docs -selectBy "last_update.date:gte:2024-01-01" -selectBy "last_update.date:lt:2025-01-01" -verbose -analyze
+
+# Gate a write on a front matter value
+fmc -dir ./docs -selectBy "draft:eq:false" -setValue "status:static:published:always"
+```
+
+Run `fmc help selectBy` for the full reference.
 
 ### Template & policy
 
