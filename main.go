@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,86 +29,89 @@ type Config struct {
 }
 
 type FrontMatterChecker struct {
-	TemplateFile       string
-	Dirs               repeatableFlag // one or more directories to scan
-	Files              []string
-	ConfigFile         string
-	PolicyFile         string
-	FixOptions         map[string]bool
-	AnalyzeOnly        bool
-	PlacementAuditOnly bool
-	GenID                    bool
-	GenIDOverwriteInvalid    bool
-	Config             Config
+	TemplateFile          string
+	Dirs                  repeatableFlag // one or more directories to scan
+	Files                 []string
+	ConfigFile            string
+	PolicyFile            string
+	FixOptions            map[string]bool
+	AnalyzeOnly           bool
+	PlacementAuditOnly    bool
+	GenID                 bool
+	GenIDOverwriteInvalid bool
+	Config                Config
 
-	IssuesOnly       bool
-	Verbose          bool
-	ListExtraProps   bool
-	ListMissingProps bool
-	ReplaceKeys      repeatableFlag // each entry: "OldKey:NewKey"
-	CreateFrom       repeatableFlag // each entry: "FromKey:ToKey[:action][:transform:fn]"
-	SetValues        repeatableFlag // each entry: "key:source:value[:action]"
-	AddMissingProps  bool
-	RemoveExtraProps bool
-	RemoveEmpty          string // CSV of property names, or "all"
-	ListEmpty            bool           // scan all keys, show empty-counts table
-	ListEmptyDetails     bool           // per-file breakdown: file | # empty | keys
-	ListEmptyForKey      repeatableFlag // each entry: property name
-	ListLength           bool           // file length table: lines and chars, total and content-only
-	SortBy               string         // sort key for list commands (name, count, lines, chars, etc.)
-	InspectProps         repeatableFlag // each entry: property name
-	PathKeep             int            // -1 = full path, 0 = filename only, N = last N dirs + filename
-	CreateFrontMatter    bool
-	OnManualReview       bool
-	FmDefaults           repeatableFlag // each entry: "key:value"
-	AnalyzeOrder         bool
-	AnalyzeSEO           bool
-	Plugin               string         // "docs" or "blog"
-	CheckFormats         repeatableFlag // each entry: "key:FORMAT"
-	CheckTypes           repeatableFlag // each entry: "key:type"
-	TryCast              repeatableFlag // each entry: "key:type"
-	KeysToTop            string // CSV of keys to move to the front, in order
-	KeysToBottom         string // CSV of keys to move to the end, in order
-	ListValues           repeatableFlag // each entry: property name
-	ListDateFormats       repeatableFlag // each entry: property name
-	ListDateFormatsDetail repeatableFlag // each entry: property name
-	GenerateSources       string         // source name to generate: "filepath" or "llm.<model>"
-	Rollup                string         // CSV: "tags", "keywords", or "tags,keywords"
-	RollupSources         string         // CSV of source paths, or "all"
-	RollupNoPreserve      bool           // replace existing tags/keywords instead of unioning
-	LLMFields                   string         // CSV of fields to generate: title,description,tags,keywords
-	LLMSkipFresherThan          int            // skip file if date_last_generated is within N days (0 = disabled)
-	LLMRegenerateIfNewer        bool           // regenerate if content date field > date_last_generated
-	LLMSkipIfContentLinesBelowN int            // skip if content (excl. FM) has fewer than N lines
-	LLMSkipIfContentCharsBelowN int            // skip if content (excl. FM) has fewer than N chars
-	LLMSkipIfPropEquals         repeatableFlag // each entry: "key:value" — skip if FM property matches
-	ApplyLLMTitle               string         // "<source[:action]>" e.g. "llm.gpt-4o:if_empty"
-	ApplyLLMDescription         string         // "<source[:action]>" e.g. "llm.gpt-4o:always"
-	PruneFMIfLinesBelowN        int            // strip all FM (except kept props) if content < N lines
-	PruneFMIfCharsBelowN        int            // strip all FM (except kept props) if content < N chars
-	PruneFMKeepProps            string         // CSV of top-level FM keys to keep when pruning
-	SelectBy                    repeatableFlag // each entry: "key:op:value" — include only matching files
-	SelectByMode                string         // "all" (default) or "any" — how multiple -selectBy combine
-	SelectByOnMissing           string         // "exclude" (default) or "include" — files lacking the key
-	SkipIfContentLinesBelowN    int            // exclude files from all operations if content < N lines
-	SkipIfContentLinesAboveN    int            // exclude files from all operations if content > N lines
-	SkipIfContentCharsBelowN    int            // exclude files from all operations if content < N chars
-	SkipIfContentCharsAboveN    int            // exclude files from all operations if content > N chars
-	SetValueIfContentLinesBelowN int           // setValue only on files whose content has < N lines
-	SetValueIfContentLinesAboveN int           // setValue only on files whose content has > N lines
-	SetValueIfContentCharsBelowN int           // setValue only on files whose content has < N chars
-	SetValueIfContentCharsAboveN int           // setValue only on files whose content has > N chars
+	IssuesOnly                   bool
+	Verbose                      bool
+	ListExtraProps               bool
+	ListMissingProps             bool
+	ReplaceKeys                  repeatableFlag // each entry: "OldKey:NewKey"
+	CreateFrom                   repeatableFlag // each entry: "FromKey:ToKey[:action][:transform:fn]"
+	SetValues                    repeatableFlag // each entry: "key:source:value[:action]"
+	AddMissingProps              bool
+	RemoveExtraProps             bool
+	RemoveEmpty                  string         // CSV of property names, or "all"
+	ListEmpty                    bool           // scan all keys, show empty-counts table
+	ListEmptyDetails             bool           // per-file breakdown: file | # empty | keys
+	ListEmptyForKey              repeatableFlag // each entry: property name
+	ListLength                   bool           // file length table: lines and chars, total and content-only
+	SortBy                       string         // sort key for list commands (name, count, lines, chars, etc.)
+	InspectProps                 repeatableFlag // each entry: property name
+	PathKeep                     int            // -1 = full path, 0 = filename only, N = last N dirs + filename
+	CreateFrontMatter            bool
+	OnManualReview               bool
+	FmDefaults                   repeatableFlag // each entry: "key:value"
+	AnalyzeOrder                 bool
+	AnalyzeSEO                   bool
+	Plugin                       string         // "docs" or "blog"
+	CheckFormats                 repeatableFlag // each entry: "key:FORMAT"
+	CheckTypes                   repeatableFlag // each entry: "key:type"
+	TryCast                      repeatableFlag // each entry: "key:type"
+	KeysToTop                    string         // CSV of keys to move to the front, in order
+	KeysToBottom                 string         // CSV of keys to move to the end, in order
+	ListValues                   repeatableFlag // each entry: property name
+	ListDateFormats              repeatableFlag // each entry: property name
+	ListDateFormatsDetail        repeatableFlag // each entry: property name
+	GenerateSources              string         // source name to generate: "filepath" or "llm.<model>"
+	Rollup                       string         // CSV: "tags", "keywords", or "tags,keywords"
+	RollupSources                string         // CSV of source paths, or "all"
+	RollupNoPreserve             bool           // replace existing tags/keywords instead of unioning
+	LLMFields                    string         // CSV of fields to generate: title,description,tags,keywords
+	LLMSkipFresherThan           int            // skip file if date_last_generated is within N days (0 = disabled)
+	LLMRegenerateIfNewer         bool           // regenerate if content date field > date_last_generated
+	LLMSkipIfContentLinesBelowN  int            // skip if content (excl. FM) has fewer than N lines
+	LLMSkipIfContentCharsBelowN  int            // skip if content (excl. FM) has fewer than N chars
+	LLMSkipIfPropEquals          repeatableFlag // each entry: "key:value" — skip if FM property matches
+	ApplyLLMTitle                string         // "<source[:action]>" e.g. "llm.gpt-4o:if_empty"
+	ApplyLLMDescription          string         // "<source[:action]>" e.g. "llm.gpt-4o:always"
+	PruneFMIfLinesBelowN         int            // strip all FM (except kept props) if content < N lines
+	PruneFMIfCharsBelowN         int            // strip all FM (except kept props) if content < N chars
+	PruneFMKeepProps             string         // CSV of top-level FM keys to keep when pruning
+	SelectBy                     repeatableFlag // each entry: "key:op:value" — include only matching files
+	SelectByMode                 string         // "all" (default) or "any" — how multiple -selectBy combine
+	SelectByOnMissing            string         // "exclude" (default) or "include" — files lacking the key
+	SkipIfContentLinesBelowN     int            // exclude files from all operations if content < N lines
+	SkipIfContentLinesAboveN     int            // exclude files from all operations if content > N lines
+	SkipIfContentCharsBelowN     int            // exclude files from all operations if content < N chars
+	SkipIfContentCharsAboveN     int            // exclude files from all operations if content > N chars
+	SetValueIfContentLinesBelowN int            // setValue only on files whose content has < N lines
+	SetValueIfContentLinesAboveN int            // setValue only on files whose content has > N lines
+	SetValueIfContentCharsBelowN int            // setValue only on files whose content has < N chars
+	SetValueIfContentCharsAboveN int            // setValue only on files whose content has > N chars
 
-	ExportJSON            string // output JSON file path
-	URLStartsAfter        string // strip this path prefix when computing link
-	ExportJSONLinkKey     string // "slug", "id", or "filename" (default: "slug")
-	ExportJSONOnMissing   string // "skip_file" or "include_file_add_empty" (default: "skip_file")
+	ExportJSON              string // output JSON file path
+	URLStartsAfter          string // strip this path prefix when computing link
+	ExportJSONLinkKey       string // "slug", "id", or "filename" (default: "slug")
+	ExportJSONOnMissing     string // "skip_file" or "include_file_add_empty" (default: "skip_file")
 	ExportJSONFields        string // CSV of fields to include; overrides template and default set
 	ExportJSONContentLength bool   // include content_lines and content_chars (excl. front matter)
 
-	ExtractLinks        string // "all", "internal", "external", or "images"
-	MakeLinksAbsolute   string // URL prefix to prepend to relative/absolute internal links
-	MakeLinksRelative   string // URL prefix to strip from absolute links
+	ExtractLinks      string // "all", "internal", "external", or "images"
+	MakeLinksAbsolute string // URL prefix to prepend to relative/absolute internal links
+	MakeLinksRelative string // URL prefix to strip from absolute links
+
+	JSONMode string          // "", "ndjson", or "array" — machine-readable analysis output
+	Findings *FindingEmitter // nil until Run configures it; see findings.go
 }
 
 func main() {
@@ -149,6 +152,7 @@ func main() {
 	files := flag.String("files", "", "Comma-separated list of files to analyze/fix")
 
 	////// List/analyze - Do not rewrite front matter /////
+	jsonMode := flag.String("json", "", "Emit analysis findings as JSON instead of tables: ndjson or array (see: fmc help json)")
 	issuesOnly := flag.Bool("issues-only", false, "Show only files with issues")
 	verbose := flag.Bool("verbose", false, "Show more detailed analysis output")
 	placementAudit := flag.Bool("placementAudit", false, "Audit front matter placement only")
@@ -297,6 +301,7 @@ func main() {
 	checker.AnalyzeOnly = *analyzeOnly
 
 	// Analysis output
+	checker.JSONMode = *jsonMode
 	checker.IssuesOnly = *issuesOnly
 	checker.Verbose = *verbose
 
@@ -371,7 +376,31 @@ func main() {
 	}
 }
 
+// Run configures machine-readable output, dispatches, and flushes.
+//
+// Exit status is deliberately not derived from the findings. Whether a broken
+// date should fail a build is policy, and policy belongs to whatever consumes
+// the stream, not to the tool that reports it. `fmc -json ndjson ... | jq -e ...`
+// lets the caller decide; baking a threshold in here would force one answer on
+// every project.
 func (fmc *FrontMatterChecker) Run() error {
+	emitter, err := NewFindingEmitter(fmc.JSONMode, os.Stdout)
+	if err != nil {
+		return err
+	}
+	fmc.Findings = emitter
+
+	runErr := fmc.run()
+
+	// Flush even when the run failed: findings gathered before the error are
+	// still valid, and in array mode they are otherwise lost entirely.
+	if flushErr := fmc.Findings.Flush(); flushErr != nil && runErr == nil {
+		runErr = flushErr
+	}
+	return runErr
+}
+
+func (fmc *FrontMatterChecker) run() error {
 	if fmc.ConfigFile != "" {
 		if err := fmc.loadConfig(); err != nil {
 			return err
@@ -610,8 +639,8 @@ func (fmc *FrontMatterChecker) loadTemplateKeyOrder() ([]string, error) {
 
 func (fmc *FrontMatterChecker) analyzeOrder(files []string, template map[string]any, templateKeys []string) error {
 	type fileResult struct {
-		path     string
-		status   string // "ok", "out_of_order", "excluded"
+		path   string
+		status string // "ok", "out_of_order", "excluded"
 	}
 
 	var results []fileResult
@@ -768,6 +797,41 @@ func validateFormat(format, layout, s string) bool {
 	}
 	_, err := time.Parse(layout, s)
 	return err == nil
+}
+
+// formatCheckString renders a parsed YAML scalar as the text a format check
+// should run against, and reports whether the value is checkable at all.
+//
+// This exists because YAML does not hand back everything as a string. An
+// unquoted ISO date is parsed into a time.Time before fmc ever sees it, and an
+// unquoted YYYYMMDD is parsed as an int. Comparing the Go type against "string"
+// therefore flagged correctly-formatted dates as violations — the most common
+// value in the corpus was reported as the error.
+//
+// time.Time is a special case worth being explicit about: by the time the value
+// reaches here the original text is gone, so the only honest statement is that
+// YAML recognised it as a timestamp. Rendering it through the requested layout
+// means such values conform to any date format asked for. That is a real
+// limitation — `2026-08-07T10:00:00Z` will satisfy a YYYY-MM-DD check — and the
+// alternative (re-reading the raw source text) is a much larger change for a
+// distinction nothing currently acts on. Quote the value in front matter if the
+// exact serialisation matters.
+func formatCheckString(v any, layout string) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case time.Time:
+		if layout == "" {
+			return t.Format(time.RFC3339), true
+		}
+		return t.Format(layout), true
+	case int:
+		return strconv.Itoa(t), true
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	default:
+		return "", false
+	}
 }
 
 func yamlTypeName(v any) string {
@@ -1174,13 +1238,23 @@ func (fmc *FrontMatterChecker) runCheckTypes(files []string) error {
 		checks = append(checks, check{key: parts[0], typeName: parts[1]})
 	}
 
+	jsonOut := fmc.Findings.Enabled()
+
 	for _, chk := range checks {
-		fmt.Printf("Checking %s is type %s:\n", chk.key, chk.typeName)
+		if !jsonOut {
+			fmt.Printf("Checking %s is type %s:\n", chk.key, chk.typeName)
+		}
 		found := false
 		for _, file := range files {
+			shown := displayPath(file, fmc.PathKeep)
 			content, err := os.ReadFile(file)
 			if err != nil {
-				fmt.Printf("  warning: could not read %s: %v\n", file, err)
+				if jsonOut {
+					fmc.Findings.Add(Finding{File: shown, Check: "checkType", Key: chk.key,
+						Severity: "warn", Detail: "could not read file: " + err.Error()})
+				} else {
+					fmt.Printf("  warning: could not read %s: %v\n", file, err)
+				}
 				continue
 			}
 			fm, err := frontmatter.GetFrontMatterMap(string(content))
@@ -1192,14 +1266,22 @@ func (fmc *FrontMatterChecker) runCheckTypes(files []string) error {
 				continue // absent — not a type violation
 			}
 			if !matchesType(val, chk.typeName) {
-				fmt.Printf("  %s  (actual type: %s, value: %v)\n", displayPath(file, fmc.PathKeep), yamlTypeName(val), val)
+				if jsonOut {
+					fmc.Findings.Add(Finding{File: shown, Check: "checkType", Key: chk.key,
+						Severity: "error", Detail: "value has the wrong type",
+						Value: fmt.Sprintf("%v", val), Expected: chk.typeName})
+				} else {
+					fmt.Printf("  %s  (actual type: %s, value: %v)\n", shown, yamlTypeName(val), val)
+				}
 				found = true
 			}
 		}
-		if !found {
-			fmt.Println("  all files conform")
+		if !jsonOut {
+			if !found {
+				fmt.Println("  all files conform")
+			}
+			fmt.Println()
 		}
-		fmt.Println()
 	}
 	return nil
 }
@@ -1224,13 +1306,23 @@ func (fmc *FrontMatterChecker) runCheckFormats(files []string) error {
 		})
 	}
 
+	jsonOut := fmc.Findings.Enabled()
+
 	for _, chk := range checks {
-		fmt.Printf("Checking %s against format %s:\n", chk.key, chk.format)
+		if !jsonOut {
+			fmt.Printf("Checking %s against format %s:\n", chk.key, chk.format)
+		}
 		found := false
 		for _, file := range files {
+			shown := displayPath(file, fmc.PathKeep)
 			content, err := os.ReadFile(file)
 			if err != nil {
-				fmt.Printf("  warning: could not read %s: %v\n", file, err)
+				if jsonOut {
+					fmc.Findings.Add(Finding{File: shown, Check: "checkFormat", Key: chk.key,
+						Severity: "warn", Detail: "could not read file: " + err.Error()})
+				} else {
+					fmt.Printf("  warning: could not read %s: %v\n", file, err)
+				}
 				continue
 			}
 			fm, err := frontmatter.GetFrontMatterMap(string(content))
@@ -1241,21 +1333,35 @@ func (fmc *FrontMatterChecker) runCheckFormats(files []string) error {
 			if !ok {
 				continue // property absent — not a format violation
 			}
-			s, ok := val.(string)
+			s, ok := formatCheckString(val, chk.layout)
 			if !ok {
-				fmt.Printf("  %s  (not a string: %T)\n", displayPath(file, fmc.PathKeep), val)
+				if jsonOut {
+					fmc.Findings.Add(Finding{File: shown, Check: "checkFormat", Key: chk.key,
+						Severity: "error", Detail: fmt.Sprintf("value is %s, which cannot be format-checked", yamlTypeName(val)),
+						Value: fmt.Sprintf("%v", val), Expected: chk.format})
+				} else {
+					fmt.Printf("  %s  (not a scalar: %s)\n", shown, yamlTypeName(val))
+				}
 				found = true
 				continue
 			}
 			if !validateFormat(chk.format, chk.layout, s) {
-				fmt.Printf("  %s  (value: %q)\n", displayPath(file, fmc.PathKeep), s)
+				if jsonOut {
+					fmc.Findings.Add(Finding{File: shown, Check: "checkFormat", Key: chk.key,
+						Severity: "error", Detail: "value does not match format",
+						Value: s, Expected: chk.format})
+				} else {
+					fmt.Printf("  %s  (value: %q)\n", shown, s)
+				}
 				found = true
 			}
 		}
-		if !found {
-			fmt.Println("  all files conform")
+		if !jsonOut {
+			if !found {
+				fmt.Println("  all files conform")
+			}
+			fmt.Println()
 		}
-		fmt.Println()
 	}
 	return nil
 }
@@ -1796,7 +1902,10 @@ func (fmc *FrontMatterChecker) inspectProps(files []string) error {
 }
 
 func printRankedSummary(counts map[string]int) {
-	type kv struct{ Key string; Count int }
+	type kv struct {
+		Key   string
+		Count int
+	}
 	ranked := make([]kv, 0, len(counts))
 	for k, v := range counts {
 		ranked = append(ranked, kv{k, v})
@@ -1953,7 +2062,8 @@ func (fmc *FrontMatterChecker) listEmptyDetails(files []string) error {
 // (front-matter excluded) lines/chars. Sortable via -sortBy.
 //
 // Sort keys: name, name:desc, lines, lines:desc, content-lines, content-lines:desc,
-//            chars, chars:desc, content-chars, content-chars:desc
+//
+//	chars, chars:desc, content-chars, content-chars:desc
 func (fmc *FrontMatterChecker) listLength(files []string) error {
 	type fileStats struct {
 		path         string
@@ -2650,11 +2760,11 @@ func (fmc *FrontMatterChecker) pruneSparseFileFM(files []string) error {
 	}
 
 	type candidate struct {
-		file    string
-		body    string
-		lines   int
-		chars   int
-		fmKeys  []string // keys that will be deleted
+		file   string
+		body   string
+		lines  int
+		chars  int
+		fmKeys []string // keys that will be deleted
 	}
 
 	var candidates []candidate
@@ -2802,6 +2912,10 @@ func (fmc *FrontMatterChecker) removeExtraProps(files []string, template map[str
 }
 
 func (fmc *FrontMatterChecker) listExtraProps(files []string, template map[string]any) error {
+	if fmc.Findings.Enabled() {
+		return fmc.emitPropFindings(files, template, "listExtraProps")
+	}
+
 	tbl := NewTable("File", "Extra Props")
 	counts := map[string]int{}
 
@@ -2833,6 +2947,10 @@ func (fmc *FrontMatterChecker) listExtraProps(files []string, template map[strin
 }
 
 func (fmc *FrontMatterChecker) listMissingProps(files []string, template map[string]any) error {
+	if fmc.Findings.Enabled() {
+		return fmc.emitPropFindings(files, template, "listMissingProps")
+	}
+
 	tbl := NewTable("File", "Missing Props")
 	counts := map[string]int{}
 
@@ -2860,6 +2978,59 @@ func (fmc *FrontMatterChecker) listMissingProps(files []string, template map[str
 	}
 	fmt.Println("\nSummary:")
 	printRankedSummary(counts)
+	return nil
+}
+
+// emitPropFindings is the JSON path for -listExtraProps and -listMissingProps.
+//
+// It emits one finding per (file, property) rather than one per file with a
+// joined list, because a list inside a JSON string is a second format to parse
+// and defeats the point. One row per fact means `group_by(.key)` and
+// `group_by(.file)` are both one jq expression.
+//
+// Severity differs by check on purpose. A missing template key is drift — plenty
+// of legitimate files omit optional properties — while a property the template
+// has never heard of is more often a typo or a stale convention, so it is the
+// one worth surfacing as an error.
+func (fmc *FrontMatterChecker) emitPropFindings(files []string, template map[string]any, check string) error {
+	severity := "warn"
+	detail := "template property missing from file"
+	if check == "listExtraProps" {
+		severity = "error"
+		detail = "property is not in the template"
+	}
+
+	for _, file := range files {
+		shown := displayPath(file, fmc.PathKeep)
+
+		content, err := os.ReadFile(file)
+		if err != nil {
+			fmc.Findings.Add(Finding{File: shown, Check: check, Severity: "warn",
+				Detail: "could not read file: " + err.Error()})
+			continue
+		}
+
+		var keys []string
+		if check == "listExtraProps" {
+			keys, err = frontmatter.FindExtraProps(string(content), template)
+		} else {
+			keys, err = frontmatter.FindMissingProps(string(content), template)
+		}
+		if err != nil {
+			// Unparseable or absent front matter. Reported under "parse" rather
+			// than the requesting check, so a consumer can separate "this file is
+			// broken" from "this file is missing a property" — they need
+			// different fixes.
+			fmc.Findings.Add(Finding{File: shown, Check: "parse", Severity: "error",
+				Detail: err.Error()})
+			continue
+		}
+
+		for _, k := range keys {
+			fmc.Findings.Add(Finding{File: shown, Check: check, Key: k,
+				Severity: severity, Detail: detail})
+		}
+	}
 	return nil
 }
 

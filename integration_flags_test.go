@@ -3,6 +3,8 @@
 package main_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1073,4 +1075,123 @@ Body.
 	// Content should be unchanged (tag_list still has existing-tag, no API call made).
 	got := readFile(t, filePath)
 	assertContains(t, got, "existing-tag")
+}
+
+// ---------------------------------------------------------------------------
+// -json machine-readable findings
+// ---------------------------------------------------------------------------
+
+// decodeNDJSON parses newline-delimited findings, failing on any line that is
+// not independently valid JSON — that independence is the property ndjson is
+// chosen for.
+func decodeNDJSON(t *testing.T, out string) []map[string]any {
+	t.Helper()
+	var findings []map[string]any
+	for i, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var f map[string]any
+		if err := json.Unmarshal([]byte(line), &f); err != nil {
+			t.Fatalf("ndjson line %d is not valid JSON on its own: %v\nline: %s", i+1, err, line)
+		}
+		findings = append(findings, f)
+	}
+	return findings
+}
+
+func TestJSONNDJSONEmitsOneObjectPerLine(t *testing.T) {
+	out := runFmc(t, "-json", "ndjson", "-checkFormat", "id:uuid", "-dir", "example-files")
+
+	findings := decodeNDJSON(t, out)
+	if len(findings) == 0 {
+		t.Fatal("expected at least one finding for a non-uuid id")
+	}
+
+	var found bool
+	for _, f := range findings {
+		if f["check"] != "checkFormat" {
+			t.Errorf("check = %v, want checkFormat", f["check"])
+		}
+		if f["key"] != "id" {
+			t.Errorf("key = %v, want id", f["key"])
+		}
+		if strings.Contains(fmt.Sprint(f["file"]), "non-uuid-id") {
+			found = true
+			if f["expected"] != "uuid" {
+				t.Errorf("expected = %v, want uuid", f["expected"])
+			}
+			if f["severity"] != "error" {
+				t.Errorf("severity = %v, want error", f["severity"])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("non-uuid-id.md missing from findings: %v", findings)
+	}
+}
+
+// Human tables and JSON must not both appear — a consumer piping stdout into a
+// parser cannot tolerate a stray "Checking id against format uuid:" header.
+func TestJSONSuppressesHumanOutput(t *testing.T) {
+	out := runFmc(t, "-json", "ndjson", "-checkFormat", "id:uuid", "-dir", "example-files")
+	assertNotContains(t, out, "Checking id against format")
+	assertNotContains(t, out, "all files conform")
+	assertNotContains(t, out, "|")
+}
+
+func TestJSONArrayIsOneDocument(t *testing.T) {
+	out := runFmc(t, "-json", "array", "-checkFormat", "id:uuid", "-dir", "example-files")
+
+	var findings []map[string]any
+	if err := json.Unmarshal([]byte(out), &findings); err != nil {
+		t.Fatalf("array mode output is not a single JSON document: %v\ngot: %s", err, out)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected at least one finding")
+	}
+}
+
+// A clean run must still be parseable rather than empty.
+func TestJSONArrayEmitsEmptyArrayOnCleanRun(t *testing.T) {
+	dir := copyToTemp(t, "date-iso.md")
+	out := runFmc(t, "-json", "array", "-checkFormat", "last_update.date:YYYY-MM-DD", "-dir", dir)
+
+	var findings []map[string]any
+	if err := json.Unmarshal([]byte(out), &findings); err != nil {
+		t.Fatalf("clean run should still emit parseable JSON, got %q: %v", out, err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for a conforming file, got %v", findings)
+	}
+}
+
+func TestJSONRejectsUnknownMode(t *testing.T) {
+	out := runFmcExpectFail(t, "-json", "yaml", "-checkFormat", "id:uuid", "-dir", "example-files")
+	assertContains(t, out, "invalid -json")
+}
+
+// Regression: YAML turns an unquoted ISO date into a time.Time, which used to be
+// reported as "not a string" — flagging correctly formatted dates as violations.
+func TestJSONCheckFormatAcceptsUnquotedYAMLDates(t *testing.T) {
+	dir := copyToTemp(t, "date-iso.md")
+	out := runFmc(t, "-json", "ndjson", "-checkFormat", "last_update.date:YYYY-MM-DD", "-dir", dir)
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("an unquoted ISO date should conform, but got findings:\n%s", out)
+	}
+}
+
+// Unparseable front matter is reported under "parse", not under the requesting
+// check: a broken file and a file missing a property need different fixes.
+func TestJSONReportsParseErrorsSeparately(t *testing.T) {
+	dir := copyToTemp(t, "content-before-fm.md")
+	out := runFmc(t, "-json", "ndjson", "-t", "example-files/template.json",
+		"-listMissingProps", "-dir", dir)
+
+	for _, f := range decodeNDJSON(t, out) {
+		if f["check"] == "parse" {
+			return
+		}
+	}
+	t.Fatalf("expected a check=parse finding for a file with no leading front matter, got:\n%s", out)
 }

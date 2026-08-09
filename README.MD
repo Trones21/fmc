@@ -187,7 +187,72 @@ Run `fmc help selectBy` for the full reference.
 | `-plugin <docs\|blog>` | Docusaurus plugin for `-analyzeSEO` |
 | `-inspectProp <key>` | Inspect nested YAML structure of a property (repeatable) |
 | `-issues-only` | Only show files that have issues |
+| `-json <ndjson\|array>` | Emit findings as JSON instead of tables (see below) |
 | `-verbose` | More detailed output |
+
+### Machine-readable output (`-json`)
+
+Analysis flags normally print tables, which are pleasant to read and awful to
+consume — anything downstream ends up scraping text that changes shape when a
+column widens. `-json` emits the same results as structured findings instead,
+and suppresses the human output entirely.
+
+Supported by `-checkFormat`, `-checkType`, `-listMissingProps` and
+`-listExtraProps`.
+
+```json
+{"file":"technical/about.md","check":"checkFormat","key":"last_update.date",
+ "severity":"error","detail":"value does not match format",
+ "value":"20250506","expected":"YYYY-MM-DD"}
+```
+
+One finding per (file, property) rather than one per file with a joined list —
+a list inside a JSON string is a second format to parse. `group_by(.key)` and
+`group_by(.file)` are then each one jq expression.
+
+**Which mode.** They differ in behaviour, not punctuation:
+
+| | `ndjson` | `array` |
+|---|---|---|
+| written | as each finding is produced | all at once, at the end |
+| memory | constant | holds every finding |
+| interrupted run | keeps what was emitted | loses everything |
+| line tools (`grep`, `wc -l`, `head`) | yes | no |
+| whole-set jq (`group_by`, `length`) | needs `--slurp` | direct |
+| parsers wanting one JSON value | no | yes |
+
+Piping into something that reads line by line, or unsure how large the run is →
+`ndjson`. Reading the whole result at once → `array`. An empty run in `array`
+mode emits `[]`, never nothing, so consumers don't special-case silence.
+
+Front matter that won't parse is reported under `check: "parse"` rather than the
+flag you asked for — a broken file and a file missing a property need different
+fixes.
+
+**Exit status is unchanged**, deliberately. fmc exits non-zero when it failed to
+run, not because it found something. Whether a bad date should fail a build is
+policy, and policy belongs to the consumer:
+
+```sh
+fmc -dir ./docs -json ndjson -checkFormat "id:uuid" | tee findings.jsonl
+test ! -s findings.jsonl
+```
+
+```sh
+# violations by property
+fmc -dir ./docs -json ndjson -checkFormat "id:uuid" \
+    -checkFormat "last_update.date:YYYY-MM-DD" | jq -r .key | sort | uniq -c
+
+# group the whole run, one pass
+fmc -dir ./docs -json array -listMissingProps -t template.json \
+  | jq 'group_by(.check) | map({check: .[0].check, n: length})'
+
+# feed a fix pass from a report
+fmc -dir ./docs -json ndjson -checkFormat "id:uuid" \
+  | jq -r .file | xargs -r fmc -genID -genIDOverwriteInvalid -files
+```
+
+Full reference: `fmc help json`.
 
 ### Single-property changes
 

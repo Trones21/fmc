@@ -521,6 +521,95 @@ Examples:
     fmc -listEmptyForKey description -listEmptyForKey tags -dir ./docs
 
 `)
+	case "json", "ndjson", "array":
+		fmt.Print(`-json ndjson|array
+
+  Emits analysis results as machine-readable findings instead of human tables.
+  Human output is suppressed entirely; nothing but JSON goes to stdout.
+
+  Supported by: -checkFormat, -checkType, -listMissingProps, -listExtraProps.
+  Other analysis flags still print tables.
+
+Why two modes
+-------------
+  They differ in behaviour, not just punctuation.
+
+  ndjson   One JSON object per line, written the moment each finding is
+           produced.
+
+           - Constant memory, whatever the corpus size.
+           - Output appears as work happens, so a long run can be watched live.
+           - Survives interruption: a killed scan still leaves every finding it
+             had already emitted, and each line is independently parseable.
+           - Line-oriented, so grep, wc -l, head, split and 'jq -c' work on it
+             directly, and it streams into another process without buffering.
+
+           Use it for large runs, for pipelines, and when you want the first
+           result before the last file is read.
+
+  array    One JSON document containing every finding, written at the end.
+
+           - Nothing is emitted until the run completes; all findings are held
+             in memory first.
+           - The output is a single valid JSON value, so whole-set operations
+             (group_by, sort_by, length) are one jq expression with no --slurp.
+           - Anything that expects to parse exactly one JSON value will accept
+             it — config loaders, most language stdlib parsers, HTTP bodies.
+           - An empty run emits [] rather than nothing, so consumers never have
+             to special-case silence.
+
+           Use it for a finite run whose output is read once, and for feeding
+           tools that cannot consume a stream.
+
+  Rule of thumb: piping to something that reads line by line, or unsure how big
+  the run is → ndjson. Reading the whole result at once → array.
+
+Finding shape
+-------------
+  {
+    "file":     "technical/about.md",   // path, honouring -pathKeep
+    "check":    "checkFormat",          // which flag produced this
+    "key":      "last_update.date",     // property involved, when applicable
+    "severity": "error",                // error | warn
+    "detail":   "value does not match format",
+    "value":    "20250506",             // the offending value, when there is one
+    "expected": "YYYY-MM-DD"            // what would have been acceptable
+  }
+
+  Empty optional fields are omitted. 'detail' is a human sentence and is not
+  stable — key off 'check', 'key' and 'severity' instead.
+
+  Front matter that cannot be parsed is reported under check "parse" rather than
+  the flag you asked for, so "this file is broken" stays distinguishable from
+  "this file is missing a property". They need different fixes.
+
+Exit status
+-----------
+  Unchanged, and deliberately so. fmc exits non-zero when it failed to run, not
+  because it found something. Whether a broken date should fail a build is
+  policy, and policy belongs to whatever consumes the stream:
+
+    fmc -dir ./docs -json ndjson -checkFormat "id:uuid" | tee findings.jsonl
+    test ! -s findings.jsonl
+
+Examples:
+  Count violations by property:
+    fmc -dir ./docs -json ndjson -checkFormat "id:uuid" \
+        -checkFormat "last_update.date:YYYY-MM-DD" | jq -r .key | sort | uniq -c
+
+  Errors only, as a file list:
+    fmc -dir ./docs -json ndjson -listExtraProps -t template.json \
+      | jq -r 'select(.severity=="error") | .file' | sort -u
+
+  Group the whole run by check, in one pass:
+    fmc -dir ./docs -json array -listMissingProps -t template.json \
+      | jq 'group_by(.check) | map({check: .[0].check, n: length})'
+
+  Feed a fix pass from a report:
+    fmc -dir ./docs -json ndjson -checkFormat "id:uuid" \
+      | jq -r .file | xargs -r fmc -genID -genIDOverwriteInvalid -files
+
+`)
 	case "checkFormat":
 		fmt.Print(`-checkFormat key:FORMAT  (repeatable)
 
@@ -678,6 +767,7 @@ Examples:
 		fmt.Println("  fmc help inspectProp")
 		fmt.Println("  fmc help listEmpty")
 		fmt.Println("  fmc help checkFormat")
+		fmt.Println("  fmc help json")
 		fmt.Println("  fmc help analyzeSEO")
 		fmt.Println("  fmc help analyzeOrder")
 		fmt.Println("  fmc help generateSources")
