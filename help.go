@@ -336,6 +336,16 @@ Transforms:
   transform:copy       same as no transform
   transform:urlsafe    URL-safe slug (lowercase, spaces→dashes, special chars stripped)
   transform:slug       alias for urlsafe
+  transform:rfc3339    Normalise a date to RFC3339 in UTC (2026-08-08T00:00:00Z)
+
+  rfc3339 accepts what YAML actually hands back, which is not always a string:
+  an unquoted 2026-08-08 arrives as a timestamp, an unquoted 20250506 as an
+  integer, and a quoted value as text. It parses RFC3339, YYYY-MM-DD, YYYYMMDD,
+  YYYY/MM/DD, DD-MM-YYYY and DD/MM/YYYY. A date with no time becomes midnight
+  UTC. It is idempotent, so it is safe to run over files already correct.
+
+  Point it at its own key to normalise in place:
+    fmc -createFrom "last_update.date:last_update.date:always:transform:rfc3339" -dir ./docs
 
 Examples:
   Copy title → display_title if missing:

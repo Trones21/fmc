@@ -93,6 +93,7 @@ A separate JSON file that defines *how* each key should be handled when fixing f
 |---|---|
 | `copy` | Copy the source value as-is |
 | `slug` / `urlsafe` | URL-safe slug (lowercase, spaces→dashes, special chars stripped) |
+| `rfc3339` | Normalise a date to RFC3339 in UTC; idempotent. Accepts RFC3339, `YYYY-MM-DD`, `YYYYMMDD`, `YYYY/MM/DD`, `DD-MM-YYYY`, `DD/MM/YYYY`, and YAML timestamps/integers. Point it at its own key to normalise in place. |
 
 ---
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -171,9 +172,64 @@ func dispatchTransform(fn, fromKey string, ctx ResolveContext) (any, error) {
 			return nil, fmt.Errorf("transform %q: source key %q is not a string", fn, fromKey)
 		}
 		return toSlug(str), nil
+	case "rfc3339":
+		return toRFC3339(sourceVal, fromKey)
 	default:
 		return nil, fmt.Errorf("%w: transform %q", ErrUnknownFunction, fn)
 	}
+}
+
+// dateInputLayouts are the serialisations seen in the wild, tried in order.
+// RFC3339 is first so an already-correct value costs one parse and comes back
+// unchanged — the transform has to be idempotent, because the normal way to run
+// it is over every file including the ones already fine.
+var dateInputLayouts = []string{
+	time.RFC3339,
+	"2006-01-02T15:04:05",
+	"2006-01-02",
+	"20060102",
+	"2006/01/02",
+	"02-01-2006",
+	"02/01/2006",
+}
+
+// toRFC3339 normalises a date to RFC3339 in UTC.
+//
+// It has to cope with what YAML hands back rather than what was written. An
+// unquoted 2026-08-08 arrives as a time.Time, a quoted "2026-08-08" as a string,
+// and an unquoted 20250506 as an int — the last being the case this exists for,
+// since a bare integer is not a date to anything downstream and sorts as a
+// number.
+//
+// Dates without a time component become midnight UTC. That is an invention, but
+// a harmless one: the source never carried a time, and every consumer of these
+// fields works at day granularity.
+func toRFC3339(v any, fromKey string) (string, error) {
+	switch t := v.(type) {
+	case time.Time:
+		return t.UTC().Format(time.RFC3339), nil
+	case int:
+		return parseDateString(strconv.Itoa(t), fromKey)
+	case int64:
+		return parseDateString(strconv.FormatInt(t, 10), fromKey)
+	case string:
+		if strings.TrimSpace(t) == "" {
+			return "", fmt.Errorf("transform \"rfc3339\": source key %q is empty", fromKey)
+		}
+		return parseDateString(t, fromKey)
+	default:
+		return "", fmt.Errorf("transform \"rfc3339\": source key %q is %T, not a date", fromKey, v)
+	}
+}
+
+func parseDateString(s, fromKey string) (string, error) {
+	s = strings.TrimSpace(s)
+	for _, layout := range dateInputLayouts {
+		if parsed, err := time.Parse(layout, s); err == nil {
+			return parsed.UTC().Format(time.RFC3339), nil
+		}
+	}
+	return "", fmt.Errorf("transform \"rfc3339\": source key %q value %q does not parse as a date", fromKey, s)
 }
 
 func ResolveValue(policy PropertyPolicy, ctx ResolveContext) (any, error) {
