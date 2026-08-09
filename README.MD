@@ -7,8 +7,16 @@ A CLI tool for auditing and fixing YAML front matter in markdown files.
 ## Build
 
 ```
-go build
+go build -o fmc .
 ```
+
+The binary is **not committed** — it is gitignored, so a fresh clone has to build
+it. Anything that shells out to `fmc` by path (scripts, CI, cron) is depending on
+that build having happened and being current for the flags it uses.
+
+For a versioned artifact, attach the binary to a GitHub Release rather than
+committing it: releases are immutable, downloadable without a clone, and do not
+add a ~10MB blob to history on every change.
 
 ## Testing
 

@@ -2,6 +2,10 @@
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
 # Binaries for programs and plugins
+# The compiled binary is named after the module, so the *.exe/*.so patterns
+# below do not catch it on Linux/macOS. Anchored to the repo root so it cannot
+# match a future package or file of the same name deeper in the tree.
+/fmc
 *.exe
 *.exe~
 *.dll
