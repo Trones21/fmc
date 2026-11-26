@@ -400,6 +400,9 @@ Examples:
   Add a static draft status if missing:
     fmc -setValue "status:static:draft" -dir ./docs
 
+  Set a list, '|'-separated (writes a YAML block list; "key:static:list" alone writes []):
+    fmc -setValue "prerequisites:static:tcpdump|strace|IP routing:list:always" -dir ./docs
+
   Set a boolean value (write false not "false"):
     fmc -setValue "disable:static:false:bool:always" -dir ./docs
 
