@@ -910,6 +910,16 @@ func castValue(val any, targetType string) (any, error) {
 		return f, nil
 	case "string":
 		return fmt.Sprintf("%v", val), nil
+	case "list", "array":
+		// '|'-separated, because ':' and ',' both turn up in real list items.
+		// An empty string is an explicit empty list.
+		out := []any{}
+		for _, item := range strings.Split(s, "|") {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out, nil
 	}
 	return nil, fmt.Errorf("unsupported target type %q", targetType)
 }
@@ -1614,10 +1624,14 @@ func (fmc *FrontMatterChecker) setValues(files []string) error {
 
 		// optional type specifier on static values: key:static:val:bool[:action]
 		var staticTypeName string
-		for _, t := range []string{"bool", "string", "int", "float"} {
-			if strings.HasSuffix(value, ":"+t) {
+		for _, t := range []string{"bool", "string", "int", "float", "list"} {
+			if strings.HasSuffix(value, ":"+t) || (t == "list" && value == t) {
 				staticTypeName = t
-				value = strings.TrimSuffix(value, ":"+t)
+				if value == t {
+					value = "" // "key:static:list" — the type alone, empty value
+				} else {
+					value = strings.TrimSuffix(value, ":"+t)
+				}
 				break
 			}
 		}
